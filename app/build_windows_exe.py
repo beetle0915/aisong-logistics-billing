@@ -17,8 +17,25 @@ DIST_DIR = ROOT_DIR / "dist" / "windows"
 PACKAGE_DIR = DIST_DIR / APP_NAME
 
 
+def configure_utf8_stdio() -> None:
+    """Prefer UTF-8 for this process when the host allows it."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8")
+            except Exception:
+                pass
+
+
+def ascii_join(parts: list[object]) -> str:
+    """Render command lines with ASCII-only escaping for safe CI logs."""
+    return " ".join(ascii(part) for part in parts)
+
+
 def run_command(command: list[str]) -> None:
-    print("+", " ".join(command))
+    print("+", ascii_join(command))
     subprocess.run(command, cwd=ROOT_DIR, check=True)
 
 
@@ -53,13 +70,14 @@ def build_exe() -> Path:
     )
     exe_path = PACKAGE_DIR / f"{APP_NAME}.exe"
     if not exe_path.exists():
-        raise FileNotFoundError(f"未找到打包结果：{exe_path}")
+        raise FileNotFoundError(f"Build output not found: {ascii(str(exe_path))}")
     return exe_path
 
 
 def main() -> int:
+    configure_utf8_stdio()
     exe_path = build_exe()
-    print(f"已生成 Windows 程序：{exe_path}")
+    print("Windows build complete:", ascii(str(exe_path)))
     return 0
 
 
