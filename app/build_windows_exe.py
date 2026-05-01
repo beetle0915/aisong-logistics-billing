@@ -10,11 +10,13 @@ from pathlib import Path
 
 
 APP_NAME = "艾松物流计费系统"
+BUILD_APP_NAME = "AisongLogisticsBilling"
 ROOT_DIR = Path(__file__).resolve().parent
 ENTRY_FILE = ROOT_DIR / "windows_entry.py"
 BUILD_DIR = ROOT_DIR / "build" / "windows"
 DIST_DIR = ROOT_DIR / "dist" / "windows"
 PACKAGE_DIR = DIST_DIR / APP_NAME
+BUILD_PACKAGE_DIR = DIST_DIR / BUILD_APP_NAME
 
 
 def configure_utf8_stdio() -> None:
@@ -58,7 +60,7 @@ def build_exe() -> Path:
             "--clean",
             "--windowed",
             "--name",
-            APP_NAME,
+            BUILD_APP_NAME,
             "--distpath",
             str(DIST_DIR),
             "--workpath",
@@ -68,10 +70,24 @@ def build_exe() -> Path:
             str(ENTRY_FILE),
         ]
     )
+    normalize_package_name()
     exe_path = PACKAGE_DIR / f"{APP_NAME}.exe"
     if not exe_path.exists():
         raise FileNotFoundError(f"Build output not found: {ascii(str(exe_path))}")
     return exe_path
+
+
+def normalize_package_name() -> None:
+    build_exe_path = BUILD_PACKAGE_DIR / f"{BUILD_APP_NAME}.exe"
+    if not build_exe_path.exists():
+        raise FileNotFoundError(f"Build output not found: {ascii(str(build_exe_path))}")
+
+    if PACKAGE_DIR.exists():
+        shutil.rmtree(PACKAGE_DIR)
+    shutil.move(str(BUILD_PACKAGE_DIR), str(PACKAGE_DIR))
+
+    final_exe_path = PACKAGE_DIR / f"{APP_NAME}.exe"
+    (PACKAGE_DIR / f"{BUILD_APP_NAME}.exe").rename(final_exe_path)
 
 
 def main() -> int:
