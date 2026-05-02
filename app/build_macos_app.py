@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 APP_NAME = "艾松物流计费系统"
-APP_VERSION = "7.0.1"
+APP_VERSION = "7.0.2"
 EXECUTABLE_NAME = "ExpressFeeCalculator"
 BUNDLE_IDENTIFIER = "com.local.express-fee-calculator"
 DEFAULT_PYTHON = Path(

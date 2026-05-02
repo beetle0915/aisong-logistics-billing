@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import queue
 import subprocess
+import sys
 import threading
 import tkinter as tk
 import uuid
@@ -26,8 +27,8 @@ from express_app.core import run_express_fee_batch_job
 from express_app.gui.config_store import GuiConfig, load_gui_config, save_gui_config
 
 
-APP_TITLE = "艾松物流计费系统 V7.0.1"
-OUTPUT_VERSION_LABEL = "V7.0.1"
+APP_TITLE = "艾松物流计费系统 V7.0.2"
+OUTPUT_VERSION_LABEL = "V7.0.2"
 
 COLORS = {
     "background": "#F8FAFC",
@@ -1064,16 +1065,34 @@ class ExpressFeeApp(tk.Tk):
         self.log_text.configure(state=tk.DISABLED)
 
     def _open_output_dir(self) -> None:
-        path = Path(self.output_dir_var.get()).expanduser()
+        path = self._path_from_entry(self.output_dir_var, "总结果目录")
+        if path is None:
+            return
         self._open_path(path)
 
     def _open_split_dir(self) -> None:
-        path = Path(self.split_dir_var.get()).expanduser()
+        path = self._path_from_entry(self.split_dir_var, "客户每日明细目录")
+        if path is None:
+            return
         self._open_path(path)
+
+    def _path_from_entry(self, variable: tk.StringVar, label: str) -> Path | None:
+        value = variable.get().strip()
+        if not value:
+            messagebox.showwarning("路径为空", f"请先设置{label}。")
+            return None
+        return Path(value).expanduser().resolve()
 
     def _open_existing_path(self, path: Path) -> None:
         try:
-            subprocess.run(["open", str(path)], check=False)
+            if sys.platform == "win32":
+                import os
+
+                os.startfile(path)  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.run(["open", str(path)], check=False)
+            else:
+                subprocess.run(["xdg-open", str(path)], check=False)
         except OSError as exc:
             messagebox.showerror("无法打开", str(exc))
 
