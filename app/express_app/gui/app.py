@@ -49,7 +49,7 @@ V8_1_WORKFLOW_STEPS = ("配置", "运行", "结果")
 V8_2_ENABLED_NAV_ITEMS = ("费用计算", "系统设置")
 V8_3_ENABLED_NAV_ITEMS = ("费用计算", "账户余额", "系统设置")
 V8_4_ENABLED_NAV_ITEMS = ("费用计算", "账户余额", "报价预览", "系统设置")
-V8_2_SETTINGS_SECTIONS = ("目录配置", "精确映射", "关键词映射", "大件规则")
+V8_2_SETTINGS_SECTIONS = ("目录配置", "精准映射", "关键词映射", "大件规则")
 V8_2_1_WORKFLOW_STEPS = (
     ("config", "配置"),
     ("run", "运行"),
@@ -58,6 +58,7 @@ V8_2_1_WORKFLOW_STEPS = (
 V8_2_1_AUTO_WORKFLOW_TRANSITIONS = {"on_start": "run", "on_done": "results"}
 V8_2_1_CONFIG_PAGE_SECTIONS = ("销售出库单", "当前系统设置", "生成选项")
 V8_2_1_CONFIG_SYSTEM_DIRECTORY_LABELS = ("报价表目录", "总结果目录", "客户明细目录")
+V8_2_1_CONFIG_GENERATION_OPTIONS = ("生成客户每日明细", "生成客户历史汇总")
 V8_3_BALANCE_TABLE_COLUMNS = ("客户", "累计消费", "累计收款", "当前余额", "最近日期", "状态", "文件路径")
 V8_3_1_BALANCE_TOP_ACTIONS = ()
 V8_3_1_BALANCE_FOOTER_ACTIONS = (
@@ -66,9 +67,20 @@ V8_3_1_BALANCE_FOOTER_ACTIONS = (
     ("打开历史汇总表", "Secondary.TButton"),
 )
 V8_4_PRICE_TEMPLATE_ACTIONS = ("同步快递报价表", "业务员", "搜索")
-V8_4_PRICE_TEMPLATE_COLUMNS = ("省份", "首重费用", "续重费用")
+V8_4_PRICE_TEMPLATE_COLUMN_IDS = (
+    "index",
+    "excel_row",
+    "province",
+    "first_price",
+    "extra_price",
+    "status",
+)
+V8_4_PRICE_TEMPLATE_COLUMNS = ("序号", "Excel行号", "省份", "首重费用", "续重费用", "状态")
+SETTINGS_TOP_TAB_STYLE = "SettingsTop.TNotebook"
 PRICE_PREVIEW_COMBO_STYLE = "PricePreview.TCombobox"
 PRICE_PREVIEW_NOTEBOOK_STYLE = "PricePreview.TNotebook"
+PRICE_PREVIEW_TAB_PADDING = (18, 10)
+PRICE_PREVIEW_TAB_EXPAND = (0, 0, 0, 0)
 PRICE_PREVIEW_TREE_STYLE = "PricePreview.Treeview"
 PRICE_PREVIEW_SCROLLBAR_STYLE = "PricePreview.Vertical.TScrollbar"
 OPTION_SELECTED_PREFIX = "✅"
@@ -208,7 +220,7 @@ def build_rule_config_from_text_fields(
         raise ValueError("大件快递至少需要填写一个标准快递公司。")
 
     return ExpressFeeRuleConfig(
-        exact_company_map=parse_mapping_text(exact_mapping_text, "快递公司精确映射"),
+        exact_company_map=parse_mapping_text(exact_mapping_text, "快递公司精准映射"),
         keyword_company_rules=[
             ExpressCompanyKeywordRule(keyword=keyword, standard_name=standard)
             for keyword, standard in parse_ordered_mapping_text(
@@ -260,13 +272,13 @@ class RuleConfigWindow(tk.Toplevel):
         title.grid(row=0, column=0, sticky="w", pady=(0, 6))
         intro = ttk.Label(
             root,
-            text="优先维护这里。系统先按精确映射识别，再用关键词映射兜底，识别结果必须能对应报价表里的 sheet 名。",
+            text="优先维护这里。系统先按精准映射识别，再用关键词映射兜底，识别结果必须能对应报价表里的 sheet 名。",
             wraplength=780,
             foreground=COLORS["muted"],
         )
         intro.grid(row=1, column=0, sticky="ew", pady=(0, 10))
 
-        exact_frame = ttk.LabelFrame(root, text="1. 精确映射（优先匹配）", padding=10)
+        exact_frame = ttk.LabelFrame(root, text="1. 精准映射（优先匹配）", padding=10)
         exact_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
         exact_frame.rowconfigure(0, weight=1)
         exact_frame.columnconfigure(0, weight=1)
@@ -420,7 +432,7 @@ class ExpressFeeApp(tk.Tk):
         self.split_dir_var = tk.StringVar(value=str(gui_config.split_dir))
         self.split_var = tk.BooleanVar(value=gui_config.split_customer_daily_files)
         self.history_var = tk.BooleanVar(value=gui_config.generate_customer_history)
-        self.refresh_all_var = tk.BooleanVar(value=gui_config.refresh_all_customers)
+        self.refresh_all_var = tk.BooleanVar(value=False)
         self.split_option_label_var = tk.StringVar()
         self.history_option_label_var = tk.StringVar()
         self.refresh_all_option_label_var = tk.StringVar()
@@ -462,10 +474,13 @@ class ExpressFeeApp(tk.Tk):
         self.price_template_customers: list[str] = []
         self.price_template_selected_sheet = ""
         self.price_template_sheet_tabs: list[str] = []
-        self.price_template_rows_by_sheet: dict[str, list[tuple[str, str, str]]] = {}
+        self.price_template_rows_by_sheet: dict[str, list[tuple[str, ...]]] = {}
         self.price_template_combo: ttk.Combobox | None = None
         self.price_template_notebook: ttk.Notebook | None = None
         self.price_template_trees: dict[str, ttk.Treeview] = {}
+        self.active_settings_section_var = tk.StringVar(value=V8_2_SETTINGS_SECTIONS[0])
+        self.settings_section_notebook: ttk.Notebook | None = None
+        self.settings_section_pages: dict[str, ttk.Frame] = {}
         self.settings_exact_text: tk.Text | None = None
         self.settings_keyword_text: tk.Text | None = None
         self.settings_large_companies_var = tk.StringVar()
@@ -648,6 +663,31 @@ class ExpressFeeApp(tk.Tk):
             foreground=[("selected", "#FFFFFF")],
         )
         style.configure(
+            SETTINGS_TOP_TAB_STYLE,
+            background=COLORS["background"],
+            borderwidth=0,
+            tabmargins=(0, 0, 0, 10),
+        )
+        style.configure(
+            f"{SETTINGS_TOP_TAB_STYLE}.Tab",
+            background=COLORS["surface_alt"],
+            foreground=COLORS["muted"],
+            padding=(18, 9),
+            font=(font_family, 11, "bold"),
+        )
+        style.map(
+            f"{SETTINGS_TOP_TAB_STYLE}.Tab",
+            background=[
+                ("selected", COLORS["primary"]),
+                ("active", COLORS["accent_bg"]),
+            ],
+            foreground=[
+                ("selected", "#FFFFFF"),
+                ("active", COLORS["primary_dark"]),
+            ],
+            expand=[("selected", (0, 0, 0, 0))],
+        )
+        style.configure(
             PRICE_PREVIEW_COMBO_STYLE,
             fieldbackground="#FFFFFF",
             background=COLORS["surface_alt"],
@@ -676,7 +716,7 @@ class ExpressFeeApp(tk.Tk):
             f"{PRICE_PREVIEW_NOTEBOOK_STYLE}.Tab",
             background=COLORS["surface_alt"],
             foreground=COLORS["muted"],
-            padding=(16, 8),
+            padding=PRICE_PREVIEW_TAB_PADDING,
             font=(font_family, 11, "bold"),
         )
         style.map(
@@ -689,6 +729,7 @@ class ExpressFeeApp(tk.Tk):
                 ("selected", "#FFFFFF"),
                 ("active", COLORS["primary_dark"]),
             ],
+            expand=[("selected", PRICE_PREVIEW_TAB_EXPAND)],
         )
         style.configure(
             PRICE_PREVIEW_TREE_STYLE,
@@ -793,14 +834,6 @@ class ExpressFeeApp(tk.Tk):
             if enabled:
                 label.bind("<Button-1>", lambda _event, nav_item=item: self._show_page(nav_item))
         ttk.Frame(sidebar, style="Sidebar.TFrame").pack(fill=tk.BOTH, expand=True)
-        self.run_button = ttk.Button(
-            sidebar,
-            text="开始计算",
-            command=self._start_job,
-            style="Primary.TButton",
-        )
-        self.run_buttons.append(self.run_button)
-        self.run_button.pack(fill=tk.X, pady=(0, 8))
         ttk.Button(
             sidebar,
             text="系统设置",
@@ -979,13 +1012,6 @@ class ExpressFeeApp(tk.Tk):
             command=self._sync_option_state,
             style="App.TCheckbutton",
         ).grid(row=1, column=0, sticky="ew", pady=(0, 8))
-        ttk.Checkbutton(
-            options_frame,
-            textvariable=self.refresh_all_option_label_var,
-            variable=self.refresh_all_var,
-            command=self._sync_option_state,
-            style="App.TCheckbutton",
-        ).grid(row=2, column=0, sticky="ew")
 
         config_actions = ttk.Frame(content, style="Content.TFrame")
         config_actions.grid(row=3, column=0, sticky="ew", pady=(12, 0))
@@ -1146,43 +1172,44 @@ class ExpressFeeApp(tk.Tk):
 
     def _build_settings_page(self, content: ttk.Frame) -> None:
         content.rowconfigure(0, weight=1)
-        content.columnconfigure(1, weight=1)
+        content.columnconfigure(0, weight=1)
 
-        section_nav = ttk.Frame(content, padding=(0, 0, 12, 0), style="Content.TFrame")
-        section_nav.grid(row=0, column=0, sticky="ns")
+        section_tabs = ttk.Notebook(content, style=SETTINGS_TOP_TAB_STYLE)
+        section_tabs.grid(row=0, column=0, sticky="nsew")
+        self.settings_section_notebook = section_tabs
+        self.settings_section_pages = {}
         for section in V8_2_SETTINGS_SECTIONS:
-            ttk.Label(
-                section_nav,
-                text=section,
-                style="StepActive.TLabel" if section == "目录配置" else "StepIdle.TLabel",
-            ).pack(fill=tk.X, pady=(0, 8))
-
-        settings_body = ttk.Frame(content, style="Content.TFrame")
-        settings_body.grid(row=0, column=1, sticky="nsew")
-        settings_body.columnconfigure(0, weight=1)
-        settings_body.columnconfigure(1, weight=1)
-        settings_body.rowconfigure(1, weight=1)
-        settings_body.rowconfigure(2, weight=1)
+            tab_frame = ttk.Frame(section_tabs, style="Content.TFrame")
+            tab_frame.columnconfigure(0, weight=1)
+            section_tabs.add(tab_frame, text=section)
+            self.settings_section_pages[section] = tab_frame
+        section_tabs.bind(
+            "<<NotebookTabChanged>>",
+            lambda _event: self._show_settings_section(
+                section_tabs.tab(section_tabs.select(), "text")
+            ),
+        )
 
         dirs_frame = ttk.LabelFrame(
-            settings_body,
+            self.settings_section_pages["目录配置"],
             text="目录配置",
             padding=14,
             style="Panel.TLabelframe",
         )
-        dirs_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        dirs_frame.grid(row=0, column=0, sticky="ew")
         dirs_frame.columnconfigure(1, weight=1)
         self._path_row(dirs_frame, 0, "报价表目录", self.price_dir_var, self._choose_price_dir)
         self._path_row(dirs_frame, 1, "总结果目录", self.output_dir_var, self._choose_output_dir)
         self._path_row(dirs_frame, 2, "客户明细目录", self.split_dir_var, self._choose_split_dir)
 
         exact_frame = ttk.LabelFrame(
-            settings_body,
-            text="精确映射",
+            self.settings_section_pages["精准映射"],
+            text="精准映射",
             padding=12,
             style="Panel.TLabelframe",
         )
-        exact_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 8), pady=(0, 12))
+        exact_frame.grid(row=0, column=0, sticky="nsew")
+        self.settings_section_pages["精准映射"].rowconfigure(0, weight=1)
         exact_frame.rowconfigure(1, weight=1)
         exact_frame.columnconfigure(0, weight=1)
         ttk.Label(
@@ -1196,12 +1223,13 @@ class ExpressFeeApp(tk.Tk):
         self.settings_exact_text.grid(row=1, column=0, sticky="nsew")
 
         keyword_frame = ttk.LabelFrame(
-            settings_body,
+            self.settings_section_pages["关键词映射"],
             text="关键词映射",
             padding=12,
             style="Panel.TLabelframe",
         )
-        keyword_frame.grid(row=1, column=1, sticky="nsew", padx=(8, 0), pady=(0, 12))
+        keyword_frame.grid(row=0, column=0, sticky="nsew")
+        self.settings_section_pages["关键词映射"].rowconfigure(0, weight=1)
         keyword_frame.rowconfigure(1, weight=1)
         keyword_frame.columnconfigure(0, weight=1)
         ttk.Label(
@@ -1215,12 +1243,12 @@ class ExpressFeeApp(tk.Tk):
         self.settings_keyword_text.grid(row=1, column=0, sticky="nsew")
 
         large_frame = ttk.LabelFrame(
-            settings_body,
+            self.settings_section_pages["大件规则"],
             text="大件规则",
             padding=14,
             style="Panel.TLabelframe",
         )
-        large_frame.grid(row=2, column=0, columnspan=2, sticky="ew")
+        large_frame.grid(row=0, column=0, sticky="ew")
         large_frame.columnconfigure(1, weight=1)
         ttk.Label(large_frame, text="大件快递", style="Field.TLabel").grid(
             row=0,
@@ -1262,8 +1290,8 @@ class ExpressFeeApp(tk.Tk):
             pady=5,
         )
 
-        actions = ttk.Frame(settings_body, style="Content.TFrame")
-        actions.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        actions = ttk.Frame(content, style="Content.TFrame")
+        actions.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         ttk.Button(
             actions,
             text="恢复默认规则",
@@ -1278,6 +1306,7 @@ class ExpressFeeApp(tk.Tk):
         ).pack(side=tk.RIGHT)
 
         self._load_rule_settings_text()
+        self._show_settings_section(V8_2_SETTINGS_SECTIONS[0])
 
     def _build_balance_page(self, content: ttk.Frame) -> None:
         content.columnconfigure(0, weight=1)
@@ -1467,6 +1496,11 @@ class ExpressFeeApp(tk.Tk):
             label.configure(style="StepActive.TLabel" if item == step_id else "StepIdle.TLabel")
         self.workflow_pages[step_id].tkraise()
 
+    def _show_settings_section(self, section: str) -> None:
+        if section not in self.settings_section_pages:
+            return
+        self.active_settings_section_var.set(section)
+
     def _set_run_buttons_state(self, state: str) -> None:
         for button in self.run_buttons:
             button.configure(state=state)
@@ -1590,8 +1624,7 @@ class ExpressFeeApp(tk.Tk):
             self._save_current_config()
 
     def _sync_option_state(self) -> None:
-        if not self.split_var.get():
-            self.refresh_all_var.set(False)
+        self.refresh_all_var.set(False)
         self._refresh_option_labels()
         self._save_current_config()
 
@@ -1602,9 +1635,7 @@ class ExpressFeeApp(tk.Tk):
         self.history_option_label_var.set(
             format_option_label("生成客户历史汇总", self.history_var.get())
         )
-        self.refresh_all_option_label_var.set(
-            format_option_label("刷新全部客户历史汇总", self.refresh_all_var.get())
-        )
+        self.refresh_all_var.set(False)
 
     def _sync_rule_settings_vars(self) -> None:
         self.settings_large_companies_var.set(format_large_piece_companies(self.rule_config))
@@ -1738,11 +1769,14 @@ class ExpressFeeApp(tk.Tk):
         self.price_template_rows_by_sheet = {
             sheet.sheet_name: [
                 (
+                    str(index),
+                    str(row.row_number),
                     row.province,
                     self._format_template_price(row.first_price),
                     self._format_template_price(row.extra_price),
+                    "正常" if row.province else "缺省份",
                 )
-                for row in sheet.rows
+                for index, row in enumerate(sheet.rows, start=1)
             ]
             for sheet in workbook.sheets
         }
@@ -1760,16 +1794,19 @@ class ExpressFeeApp(tk.Tk):
                 tab_frame.columnconfigure(0, weight=1)
                 tree = ttk.Treeview(
                     tab_frame,
-                    columns=("province", "first_price", "extra_price"),
+                    columns=V8_4_PRICE_TEMPLATE_COLUMN_IDS,
                     show="headings",
                     height=12,
                     style=PRICE_PREVIEW_TREE_STYLE,
                 )
                 for column_id, label in zip(tree["columns"], V8_4_PRICE_TEMPLATE_COLUMNS):
                     tree.heading(column_id, text=label)
+                tree.column("index", width=70, minwidth=60, stretch=False, anchor=tk.CENTER)
+                tree.column("excel_row", width=90, minwidth=76, stretch=False, anchor=tk.CENTER)
                 tree.column("province", width=160, minwidth=120, stretch=True)
-                tree.column("first_price", width=120, minwidth=90, stretch=False)
-                tree.column("extra_price", width=120, minwidth=90, stretch=False)
+                tree.column("first_price", width=110, minwidth=90, stretch=False, anchor=tk.E)
+                tree.column("extra_price", width=110, minwidth=90, stretch=False, anchor=tk.E)
+                tree.column("status", width=90, minwidth=80, stretch=False, anchor=tk.CENTER)
                 tree.grid(row=0, column=0, sticky="nsew")
                 scrollbar = ttk.Scrollbar(
                     tab_frame,
@@ -1894,7 +1931,7 @@ class ExpressFeeApp(tk.Tk):
             split_dir=split_dir,
             split_customer_daily_files=self.split_var.get(),
             generate_customer_history=self.history_var.get(),
-            refresh_all_customers=self.refresh_all_var.get(),
+            refresh_all_customers=False,
             rule_config=self.rule_config,
         )
 
@@ -2057,7 +2094,7 @@ class ExpressFeeApp(tk.Tk):
             split_dir=Path(self.split_dir_var.get()).expanduser(),
             split_customer_daily_files=self.split_var.get(),
             generate_customer_history=self.history_var.get(),
-            refresh_all_customers=self.refresh_all_var.get(),
+            refresh_all_customers=False,
             rule_config=self.rule_config,
         )
 

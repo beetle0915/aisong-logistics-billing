@@ -86,14 +86,16 @@ class V84PricePreviewPageTest(unittest.TestCase):
         )
         self.assertEqual(
             list(gui_app.V8_4_PRICE_TEMPLATE_COLUMNS),
-            ["省份", "首重费用", "续重费用"],
+            ["序号", "Excel行号", "省份", "首重费用", "续重费用", "状态"],
         )
         self.assertNotIn("重量", gui_app.V8_4_PRICE_TEMPLATE_ACTIONS)
-        self.assertNotIn("最终费用", gui_app.V8_4_PRICE_TEMPLATE_COLUMNS)
+        self.assertEqual(len(gui_app.V8_4_PRICE_TEMPLATE_COLUMNS), 6)
 
     def test_price_preview_uses_isolated_ui_styles(self) -> None:
         self.assertEqual(gui_app.PRICE_PREVIEW_COMBO_STYLE, "PricePreview.TCombobox")
         self.assertEqual(gui_app.PRICE_PREVIEW_NOTEBOOK_STYLE, "PricePreview.TNotebook")
+        self.assertEqual(gui_app.PRICE_PREVIEW_TAB_PADDING, (18, 10))
+        self.assertEqual(gui_app.PRICE_PREVIEW_TAB_EXPAND, (0, 0, 0, 0))
         self.assertEqual(gui_app.PRICE_PREVIEW_TREE_STYLE, "PricePreview.Treeview")
         self.assertEqual(gui_app.PRICE_PREVIEW_SCROLLBAR_STYLE, "PricePreview.Vertical.TScrollbar")
 
@@ -130,7 +132,10 @@ class V84PricePreviewPageTest(unittest.TestCase):
 
             self.assertEqual(app.price_template_sheet_tabs, ["顺丰", "申通"])
             self.assertEqual(app.price_template_selected_sheet, "顺丰")
-            self.assertEqual(app.price_template_rows_by_sheet["顺丰"][0], ("上海市", "¥6.50", "¥0.90"))
+            self.assertEqual(
+                app.price_template_rows_by_sheet["顺丰"][0],
+                ("1", "2", "上海市", "¥6.50", "¥0.90", "正常"),
+            )
             self.assertIn("客户A", app.price_template_summary_var.get())
             self.assertIn("2 个快递公司", app.price_template_summary_var.get())
 

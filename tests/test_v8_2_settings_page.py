@@ -8,6 +8,7 @@ APP_DIR = Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP_DIR))
 
 from express_app.gui.app import (  # noqa: E402
+    SETTINGS_TOP_TAB_STYLE,
     V8_2_ENABLED_NAV_ITEMS,
     V8_2_SETTINGS_SECTIONS,
     build_rule_config_from_text_fields,
@@ -22,8 +23,11 @@ class V82SettingsPageTest(unittest.TestCase):
     def test_settings_sections_match_handoff_structure(self) -> None:
         self.assertEqual(
             list(V8_2_SETTINGS_SECTIONS),
-            ["目录配置", "精确映射", "关键词映射", "大件规则"],
+            ["目录配置", "精准映射", "关键词映射", "大件规则"],
         )
+
+    def test_settings_sections_are_presented_as_top_tabs(self) -> None:
+        self.assertEqual(SETTINGS_TOP_TAB_STYLE, "SettingsTop.TNotebook")
 
     def test_fee_calculation_and_settings_are_enabled_nav_items(self) -> None:
         self.assertEqual(list(V8_2_ENABLED_NAV_ITEMS), ["费用计算", "系统设置"])
