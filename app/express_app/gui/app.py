@@ -2137,40 +2137,72 @@ class ExpressFeeApp(tk.Tk):
 
     def _run_job_worker(self, config: ExpressFeeBatchJobConfig) -> None:
         try:
-            result = run_express_fee_batch_job(config)
+            result = run_express_fee_batch_job(
+                config,
+                progress_callback=lambda message: self._queue.put(("log", message)),
+            )
         except Exception as exc:  # GUI boundary: show unexpected errors to user.
             self._queue.put(("error", exc))
         else:
             self._queue.put(("done", result))
 
     def _poll_queue(self) -> None:
-        try:
-            kind, payload = self._queue.get_nowait()
-        except queue.Empty:
-            if self._worker and self._worker.is_alive():
-                self.after(100, self._poll_queue)
-            return
+        handled_terminal_event = False
+        while True:
+            try:
+                kind, payload = self._queue.get_nowait()
+            except queue.Empty:
+                break
 
-        if kind == "done":
-            result = payload
-            assert isinstance(result, ExpressFeeBatchJobResult)
-            self._last_result = result
-            self._append_log("\n".join(result.logs))
-            self._populate_result_table(result)
-            self._update_summary(result)
-            self.status_var.set("完成" if result.ok else "完成，有错误")
-            self._set_run_buttons_state(tk.NORMAL)
-            self._show_workflow_step(V8_2_1_AUTO_WORKFLOW_TRANSITIONS["on_done"])
-            if result.ok:
-                messagebox.showinfo("运行完成", "快递费计算已完成。")
-            else:
-                messagebox.showwarning("运行完成", "任务已完成，但存在错误，请查看运行日志。")
-        elif kind == "error":
-            self._append_log(f"运行失败：{payload}")
-            self.status_var.set("失败")
-            self._set_run_buttons_state(tk.NORMAL)
-            self._show_workflow_step("run")
-            messagebox.showerror("运行失败", str(payload))
+            if kind == "log":
+                self._append_log(str(payload))
+            elif kind == "done":
+                handled_terminal_event = True
+                result = payload
+                assert isinstance(result, ExpressFeeBatchJobResult)
+                self._last_result = result
+                self._append_log(self._format_run_completion_summary(result))
+                self._populate_result_table(result)
+                self._update_summary(result)
+                self.status_var.set("完成" if result.ok else "完成，有错误")
+                self._set_run_buttons_state(tk.NORMAL)
+                self._show_workflow_step(V8_2_1_AUTO_WORKFLOW_TRANSITIONS["on_done"])
+                if result.ok:
+                    messagebox.showinfo("运行完成", "快递费计算已完成。")
+                else:
+                    messagebox.showwarning("运行完成", "任务已完成，但存在错误，请查看运行日志。")
+            elif kind == "error":
+                handled_terminal_event = True
+                self._append_log(f"运行失败：{payload}")
+                self.status_var.set("失败")
+                self._set_run_buttons_state(tk.NORMAL)
+                self._show_workflow_step("run")
+                messagebox.showerror("运行失败", str(payload))
+
+        if not handled_terminal_event and self._worker and self._worker.is_alive():
+            self.after(100, self._poll_queue)
+
+    def _format_run_completion_summary(self, result: ExpressFeeBatchJobResult) -> str:
+        lines = [
+            "批量任务完成：",
+            f"销售表数量：{len(result.job_results)} 个",
+            f"成功文件数：{sum(1 for item in result.job_results if item.ok)} 个",
+            f"错误文件数：{sum(1 for item in result.job_results if not item.ok)} 个",
+            f"总处理行数：{result.total_rows} 条",
+            f"总成功行数：{result.success_rows} 条",
+            f"总失败行数：{result.failed_rows} 条",
+            f"生成结果文件：{len([item for item in result.job_results if item.output_path.exists()])} 个",
+        ]
+        error_lines: list[str] = []
+        for job_result in result.job_results:
+            error_lines.extend(job_result.processing_errors)
+            error_lines.extend(job_result.split_errors)
+            error_lines.extend(job_result.history_errors)
+        error_lines.extend(result.history_errors)
+        if error_lines:
+            lines.extend(["", "需要处理的问题："])
+            lines.extend(error_lines)
+        return "\n".join(lines)
 
     def _append_log(self, text: str) -> None:
         self.log_text.configure(state=tk.NORMAL)

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -97,6 +97,18 @@ DEFAULT_LARGE_PIECE_COMPANIES = {"顺丰", "德邦"}
 DEFAULT_LARGE_PIECE_THRESHOLD_KG = 20
 DEFAULT_LARGE_PIECE_SUFFIX = "_大件"
 INTEGER_ROUNDING_EXPRESS_COMPANIES = {"德邦"}
+ProgressCallback = Callable[[str], None]
+PROGRESS_ROW_INTERVAL = 200
+PROGRESS_GROUP_INTERVAL = 20
+
+
+def emit_progress(progress_callback: ProgressCallback | None, message: str) -> None:
+    if progress_callback is not None:
+        progress_callback(message)
+
+
+def should_emit_progress(current: int, total: int, interval: int) -> bool:
+    return current == 1 or current == total or current % interval == 0
 
 
 def build_default_rule_config() -> ExpressFeeRuleConfig:
@@ -899,6 +911,7 @@ def process_sales_workbook(
     output_path: Path,
     round_digits: int | None,
     rule_config: ExpressFeeRuleConfig,
+    progress_callback: ProgressCallback | None = None,
 ) -> ProcessingSummary:
     workbook = openpyxl.load_workbook(sales_file)
     ws = workbook.active
@@ -916,6 +929,10 @@ def process_sales_workbook(
     result_columns = append_result_columns(ws)
 
     summary = ProcessingSummary(total_rows=max(ws.max_row - 1, 0))
+    emit_progress(
+        progress_callback,
+        f"正在计算快递费：共 {summary.total_rows} 行",
+    )
 
     salesman_col = sales_headers["业务员"]
     raw_express_col = sales_headers[RAW_EXPRESS_COLUMN]
@@ -1044,8 +1061,22 @@ def process_sales_workbook(
                 )
             summary.add_error(row, message)
 
+        processed_rows = row - 1
+        if should_emit_progress(processed_rows, summary.total_rows, PROGRESS_ROW_INTERVAL):
+            emit_progress(
+                progress_callback,
+                "计算快递费："
+                f"已处理 {processed_rows}/{summary.total_rows} 行，"
+                f"成功 {summary.success_rows}，失败 {summary.failed_rows}",
+            )
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    emit_progress(progress_callback, "正在保存总结果...")
     workbook.save(output_path)
+    emit_progress(
+        progress_callback,
+        f"总结果保存完成：共 {summary.total_rows} 行，成功 {summary.success_rows}，失败 {summary.failed_rows}",
+    )
     return summary
 
 
@@ -1172,6 +1203,7 @@ def split_customer_daily_files(
     result_workbook_path: Path,
     split_dir: Path,
     rule_config: ExpressFeeRuleConfig,
+    progress_callback: ProgressCallback | None = None,
 ) -> SplitSummary:
     workbook = openpyxl.load_workbook(result_workbook_path, data_only=True)
     ws = workbook.active
@@ -1188,6 +1220,8 @@ def split_customer_daily_files(
 
     date_index = header_index[SHIPPING_DATE_COLUMN]
     customer_index = header_index["业务员"]
+    total_rows = max(ws.max_row - 1, 0)
+    emit_progress(progress_callback, f"正在整理客户每日明细：扫描 {total_rows} 行")
     for row_number in range(2, ws.max_row + 1):
         values = [ws.cell(row=row_number, column=column).value for column in range(1, ws.max_column + 1)]
         try:
@@ -1200,7 +1234,10 @@ def split_customer_daily_files(
             summary.add_error(row_number, str(exc))
 
     split_dir.mkdir(parents=True, exist_ok=True)
-    for (shipping_date, customer), rows in sorted(groups.items()):
+    group_items = sorted(groups.items())
+    total_groups = len(group_items)
+    emit_progress(progress_callback, f"正在生成客户每日明细：共 {total_groups} 个客户/日期组合")
+    for group_index, ((shipping_date, customer), rows) in enumerate(group_items, start=1):
         safe_customer = sanitize_filename(customer)
         customer_dir = split_dir / safe_customer
         customer_dir.mkdir(parents=True, exist_ok=True)
@@ -1223,6 +1260,16 @@ def split_customer_daily_files(
                 output_path=output_path,
             )
         )
+        if should_emit_progress(group_index, total_groups, PROGRESS_GROUP_INTERVAL):
+            emit_progress(
+                progress_callback,
+                f"客户每日明细：已完成 {group_index}/{total_groups} 组",
+            )
+
+    emit_progress(
+        progress_callback,
+        f"客户每日明细完成：生成 {len(summary.generated_files)} 组，跳过 {summary.skipped_rows} 行",
+    )
 
     return summary
 
@@ -1731,6 +1778,7 @@ def add_or_preserve_customer_payment_sheet(
 def build_customer_history_summary(
     customer_dir: Path,
     rule_config: ExpressFeeRuleConfig,
+    progress_callback: ProgressCallback | None = None,
 ) -> CustomerHistorySummary:
     customer = customer_dir.name
     output_path = customer_dir / customer_history_summary_file_name(customer)
@@ -1739,13 +1787,23 @@ def build_customer_history_summary(
     errors: list[str] = []
     daily_summaries: list[DailyCustomerSummary] = []
 
-    for detail_file in sorted(customer_dir.iterdir()):
+    detail_files = [
+        detail_file
+        for detail_file in sorted(customer_dir.iterdir())
+        if is_daily_detail_file(detail_file)
+    ]
+    for detail_index, detail_file in enumerate(detail_files, start=1):
         if not is_daily_detail_file(detail_file):
             continue
         try:
             daily_summaries.append(read_daily_customer_summary(detail_file, rule_config))
         except ValueError as exc:
             errors.append(f"{detail_file.name}：{exc}")
+        if should_emit_progress(detail_index, len(detail_files), PROGRESS_GROUP_INTERVAL):
+            emit_progress(
+                progress_callback,
+                f"历史汇总：{customer}，读取每日明细 {detail_index}/{len(detail_files)} 天",
+            )
 
     daily_summaries.sort(key=lambda item: item.shipping_date)
     if not daily_summaries:
@@ -1776,6 +1834,7 @@ def build_customer_history_summary(
 
     add_or_preserve_customer_payment_sheet(workbook, [output_path, legacy_output_path])
 
+    emit_progress(progress_callback, f"历史汇总：{customer}，正在写入汇总表")
     workbook.save(output_path)
     return CustomerHistorySummary(
         customer=customer,
@@ -1791,6 +1850,7 @@ def refresh_customer_history_summaries(
     split_dir: Path,
     customers: set[str] | None = None,
     rule_config: ExpressFeeRuleConfig | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> list[CustomerHistorySummary]:
     resolved_rule_config = normalize_rule_config(rule_config)
     if not split_dir.exists():
@@ -1818,7 +1878,13 @@ def refresh_customer_history_summaries(
         ]
 
     summaries: list[CustomerHistorySummary] = []
-    for customer_dir in customer_dirs:
+    total_customers = len(customer_dirs)
+    emit_progress(progress_callback, f"正在刷新客户历史汇总：共 {total_customers} 位客户")
+    for customer_index, customer_dir in enumerate(customer_dirs, start=1):
+        emit_progress(
+            progress_callback,
+            f"客户历史汇总：正在处理 {customer_index}/{total_customers}，客户：{customer_dir.name}",
+        )
         if not customer_dir.exists():
             summaries.append(
                 CustomerHistorySummary(
@@ -1831,11 +1897,25 @@ def refresh_customer_history_summaries(
                 )
             )
             continue
-        summaries.append(build_customer_history_summary(customer_dir, resolved_rule_config))
+        summaries.append(
+            build_customer_history_summary(
+                customer_dir,
+                resolved_rule_config,
+                progress_callback,
+            )
+        )
+        if should_emit_progress(customer_index, total_customers, PROGRESS_GROUP_INTERVAL):
+            emit_progress(
+                progress_callback,
+                f"客户历史汇总：已完成 {customer_index}/{total_customers} 位客户",
+            )
     return summaries
 
 
-def run_express_fee_job(config: ExpressFeeJobConfig) -> ExpressFeeJobResult:
+def run_express_fee_job(
+    config: ExpressFeeJobConfig,
+    progress_callback: ProgressCallback | None = None,
+) -> ExpressFeeJobResult:
     """Run one complete express fee job and return structured results.
 
     This is the stable core entry point for both the V6 CLI and the future
@@ -1866,12 +1946,15 @@ def run_express_fee_job(config: ExpressFeeJobConfig) -> ExpressFeeJobResult:
     if config.split_customer_daily_files:
         logs.append(f"客户拆分目录：{split_dir}")
 
+    emit_progress(progress_callback, "正在读取报价表...")
     price_map = load_price_tables(price_dir)
+    emit_progress(progress_callback, f"报价表读取完成：共 {len(price_map)} 条省份价格")
     available_standard_companies = {
         sheet_name
         for _, sheet_name, _ in price_map
         if not sheet_name.endswith(rule_config.large_piece_suffix)
     }
+    emit_progress(progress_callback, f"销售表：{sales_file.name}")
     processing_summary = process_sales_workbook(
         sales_file,
         price_map,
@@ -1879,6 +1962,7 @@ def run_express_fee_job(config: ExpressFeeJobConfig) -> ExpressFeeJobResult:
         output_path,
         config.round_digits,
         rule_config,
+        progress_callback,
     )
 
     logs.extend(
@@ -1898,7 +1982,13 @@ def run_express_fee_job(config: ExpressFeeJobConfig) -> ExpressFeeJobResult:
     split_errors: list[str] = []
     touched_customers: set[str] = set()
     if config.split_customer_daily_files:
-        split_summary = split_customer_daily_files(output_path, split_dir, rule_config)
+        emit_progress(progress_callback, "进入阶段：生成客户每日明细")
+        split_summary = split_customer_daily_files(
+            output_path,
+            split_dir,
+            rule_config,
+            progress_callback,
+        )
         logs.append("")
         logs.append("客户拆分：")
         logs.append(f"生成客户文件：{len(split_summary.generated_files)} 个")
@@ -1906,10 +1996,6 @@ def run_express_fee_job(config: ExpressFeeJobConfig) -> ExpressFeeJobResult:
         for item in split_summary.generated_files:
             touched_customers.add(item.customer)
             split_files.append(item.output_path)
-            logs.append(
-                f"{item.customer} {item.shipping_date}："
-                f"{item.row_count} 条 -> {item.output_path}"
-            )
         if split_summary.errors:
             logs.append("")
             logs.append("拆分失败明细：")
@@ -1927,10 +2013,12 @@ def run_express_fee_job(config: ExpressFeeJobConfig) -> ExpressFeeJobResult:
             refresh_customers = None if not config.split_customer_daily_files else set()
 
         if refresh_customers is None or refresh_customers:
+            emit_progress(progress_callback, "进入阶段：刷新客户历史汇总")
             history_summaries = refresh_customer_history_summaries(
                 split_dir,
                 refresh_customers,
                 rule_config,
+                progress_callback,
             )
             logs.append("")
             logs.append("客户历史汇总：")
@@ -1941,8 +2029,7 @@ def run_express_fee_job(config: ExpressFeeJobConfig) -> ExpressFeeJobResult:
                     history_files.append(item.output_path)
                     logs.append(
                         f"{item.customer}：{item.day_count} 天，"
-                        f"{item.row_count} 单，累计费用 {round(item.total_fee, 2)} "
-                        f"-> {item.output_path}"
+                        f"{item.row_count} 单，累计费用 {round(item.total_fee, 2)}"
                     )
                 if item.errors:
                     for error in item.errors:
@@ -1969,6 +2056,7 @@ def run_express_fee_job(config: ExpressFeeJobConfig) -> ExpressFeeJobResult:
 
 def run_express_fee_batch_job(
     config: ExpressFeeBatchJobConfig,
+    progress_callback: ProgressCallback | None = None,
 ) -> ExpressFeeBatchJobResult:
     """Run multiple sales workbooks and refresh customer history once.
 
@@ -2000,11 +2088,14 @@ def run_express_fee_batch_job(
     ]
     if config.split_customer_daily_files:
         logs.append(f"客户拆分目录：{split_dir}")
+    emit_progress(progress_callback, f"准备运行：共 {len(sales_files)} 个销售表")
+    emit_progress(progress_callback, f"报价目录：{price_dir}")
 
     job_results: list[ExpressFeeJobResult] = []
     touched_customers: set[str] = set()
     for index, sales_file in enumerate(sales_files, start=1):
         logs.extend(["", f"========== 第 {index}/{len(sales_files)} 个文件 =========="])
+        emit_progress(progress_callback, f"销售表 {index}/{len(sales_files)}：{sales_file.name}")
         output_path = output_paths[sales_file]
         job_config = ExpressFeeJobConfig(
             sales_file=sales_file,
@@ -2019,7 +2110,7 @@ def run_express_fee_batch_job(
         )
 
         try:
-            result = run_express_fee_job(job_config)
+            result = run_express_fee_job(job_config, progress_callback)
         except Exception as exc:  # Keep a batch moving if one workbook is bad.
             message = str(exc)
             if not message.startswith("["):
@@ -2044,11 +2135,16 @@ def run_express_fee_batch_job(
                     message,
                 ],
             )
+            emit_progress(progress_callback, f"销售表 {index}/{len(sales_files)} 处理失败，请查看错误明细。")
 
         job_results.append(result)
         logs.extend(result.logs)
         for split_file in result.split_files:
             touched_customers.add(split_file.parent.name)
+        emit_progress(
+            progress_callback,
+            f"销售表 {index}/{len(sales_files)} 完成：成功 {result.success_rows} 行，失败 {result.failed_rows} 行",
+        )
 
     history_files: list[Path] = []
     history_errors: list[str] = []
@@ -2061,10 +2157,12 @@ def run_express_fee_batch_job(
             refresh_customers = None if not config.split_customer_daily_files else set()
 
         if refresh_customers is None or refresh_customers:
+            emit_progress(progress_callback, "进入阶段：批量刷新客户历史汇总")
             history_summaries = refresh_customer_history_summaries(
                 split_dir,
                 refresh_customers,
                 rule_config,
+                progress_callback,
             )
             logs.append("")
             logs.append("批量客户历史汇总：")
@@ -2075,8 +2173,7 @@ def run_express_fee_batch_job(
                     history_files.append(item.output_path)
                     logs.append(
                         f"{item.customer}：{item.day_count} 天，"
-                        f"{item.row_count} 单，累计费用 {round(item.total_fee, 2)} "
-                        f"-> {item.output_path}"
+                        f"{item.row_count} 单，累计费用 {round(item.total_fee, 2)}"
                     )
                 if item.errors:
                     for error in item.errors:
@@ -2096,6 +2193,10 @@ def run_express_fee_batch_job(
             f"总失败行数：{sum(result.failed_rows for result in job_results)} 条",
             f"总结果文件：{len([result for result in job_results if result.output_path.exists()])} 个",
         ]
+    )
+    emit_progress(
+        progress_callback,
+        f"全部处理完成：销售表 {len(job_results)}/{len(sales_files)}，成功 {sum(item.success_rows for item in job_results)} 行，失败 {sum(item.failed_rows for item in job_results)} 行",
     )
 
     return ExpressFeeBatchJobResult(
