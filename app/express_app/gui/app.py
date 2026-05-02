@@ -39,6 +39,8 @@ V8_1_MAIN_NAV_ITEMS = (
     "系统设置",
 )
 V8_1_WORKFLOW_STEPS = ("配置", "运行", "结果")
+V8_2_ENABLED_NAV_ITEMS = ("费用计算", "系统设置")
+V8_2_SETTINGS_SECTIONS = ("目录配置", "精确映射", "关键词映射", "大件规则")
 OPTION_SELECTED_PREFIX = "✅"
 OPTION_UNSELECTED_PREFIX = "□"
 RULE_WINDOW_TITLE = "快递识别与大件规则"
@@ -85,6 +87,109 @@ COLORS = {
 def format_option_label(label: str, selected: bool) -> str:
     prefix = OPTION_SELECTED_PREFIX if selected else OPTION_UNSELECTED_PREFIX
     return f"{prefix} {label}"
+
+
+def parse_company_list(text: str) -> set[str]:
+    normalized = text.replace("，", ",").replace("、", ",").replace(";", ",")
+    return {item.strip() for item in normalized.split(",") if item.strip()}
+
+
+def iter_mapping_lines(text: str):
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        yield line_number, line
+
+
+def parse_mapping_line(line: str, source_name: str, line_number: int) -> tuple[str, str]:
+    separator = "=>" if "=>" in line else "="
+    if separator not in line:
+        raise ValueError(f"{source_name} 第 {line_number} 行缺少 =。")
+    raw_name, standard_name = [part.strip() for part in line.split(separator, 1)]
+    if not raw_name or not standard_name:
+        raise ValueError(f"{source_name} 第 {line_number} 行不能有空值。")
+    return raw_name, standard_name
+
+
+def parse_mapping_text(text: str, source_name: str) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for line_number, line in iter_mapping_lines(text):
+        raw_name, standard_name = parse_mapping_line(line, source_name, line_number)
+        if raw_name in mapping:
+            raise ValueError(f"{source_name} 第 {line_number} 行重复：{raw_name}")
+        mapping[raw_name] = standard_name
+    if not mapping:
+        raise ValueError(f"{source_name}不能为空。")
+    return mapping
+
+
+def parse_ordered_mapping_text(text: str, source_name: str) -> list[tuple[str, str]]:
+    rules: list[tuple[str, str]] = []
+    seen_keywords: set[str] = set()
+    for line_number, line in iter_mapping_lines(text):
+        keyword, standard_name = parse_mapping_line(line, source_name, line_number)
+        if keyword in seen_keywords:
+            raise ValueError(f"{source_name} 第 {line_number} 行重复：{keyword}")
+        seen_keywords.add(keyword)
+        rules.append((keyword, standard_name))
+    if not rules:
+        raise ValueError(f"{source_name}不能为空。")
+    return rules
+
+
+def format_exact_mapping_text(rule_config: ExpressFeeRuleConfig) -> str:
+    return "\n".join(
+        f"{raw_name}={standard_name}"
+        for raw_name, standard_name in sorted(rule_config.exact_company_map.items())
+    )
+
+
+def format_keyword_mapping_text(rule_config: ExpressFeeRuleConfig) -> str:
+    return "\n".join(
+        f"{item.keyword}={item.standard_name}" for item in rule_config.keyword_company_rules
+    )
+
+
+def format_large_piece_companies(rule_config: ExpressFeeRuleConfig) -> str:
+    return "、".join(sorted(rule_config.large_piece_companies))
+
+
+def build_rule_config_from_text_fields(
+    exact_mapping_text: str,
+    keyword_mapping_text: str,
+    large_companies_text: str,
+    threshold_text: str,
+    suffix_text: str,
+) -> ExpressFeeRuleConfig:
+    try:
+        threshold = float(threshold_text.strip())
+    except ValueError as exc:
+        raise ValueError("重量阈值必须是数字。") from exc
+    if threshold <= 0:
+        raise ValueError("重量阈值必须大于 0。")
+
+    suffix = suffix_text.strip()
+    if not suffix:
+        raise ValueError("模板后缀不能为空。")
+
+    large_piece_companies = parse_company_list(large_companies_text)
+    if not large_piece_companies:
+        raise ValueError("大件快递至少需要填写一个标准快递公司。")
+
+    return ExpressFeeRuleConfig(
+        exact_company_map=parse_mapping_text(exact_mapping_text, "快递公司精确映射"),
+        keyword_company_rules=[
+            ExpressCompanyKeywordRule(keyword=keyword, standard_name=standard)
+            for keyword, standard in parse_ordered_mapping_text(
+                keyword_mapping_text,
+                "快递公司关键词映射",
+            )
+        ],
+        large_piece_companies=large_piece_companies,
+        large_piece_threshold_kg=threshold,
+        large_piece_suffix=suffix,
+    )
 
 
 class RuleConfigWindow(tk.Toplevel):
@@ -216,25 +321,13 @@ class RuleConfigWindow(tk.Toplevel):
         )
 
     def _load_rule_config(self, rule_config: ExpressFeeRuleConfig) -> None:
-        self.large_companies_var.set("、".join(sorted(rule_config.large_piece_companies)))
+        self.large_companies_var.set(format_large_piece_companies(rule_config))
         self.threshold_var.set(str(rule_config.large_piece_threshold_kg))
         self.suffix_var.set(rule_config.large_piece_suffix)
         self.exact_text.delete("1.0", tk.END)
-        self.exact_text.insert(
-            tk.END,
-            "\n".join(
-                f"{raw_name}={standard_name}"
-                for raw_name, standard_name in sorted(rule_config.exact_company_map.items())
-            ),
-        )
+        self.exact_text.insert(tk.END, format_exact_mapping_text(rule_config))
         self.keyword_text.delete("1.0", tk.END)
-        self.keyword_text.insert(
-            tk.END,
-            "\n".join(
-                f"{item.keyword}={item.standard_name}"
-                for item in rule_config.keyword_company_rules
-            ),
-        )
+        self.keyword_text.insert(tk.END, format_keyword_mapping_text(rule_config))
 
     def _restore_defaults(self) -> None:
         self._load_rule_config(build_default_rule_config())
@@ -251,82 +344,28 @@ class RuleConfigWindow(tk.Toplevel):
         self.destroy()
 
     def _build_rule_config(self) -> ExpressFeeRuleConfig:
-        threshold_text = self.threshold_var.get().strip()
-        try:
-            threshold = float(threshold_text)
-        except ValueError as exc:
-            raise ValueError("重量阈值必须是数字。") from exc
-        if threshold <= 0:
-            raise ValueError("重量阈值必须大于 0。")
-
-        suffix = self.suffix_var.get().strip()
-        if not suffix:
-            raise ValueError("模板后缀不能为空。")
-
-        large_piece_companies = self._parse_company_list(self.large_companies_var.get())
-        if not large_piece_companies:
-            raise ValueError("大件快递至少需要填写一个标准快递公司。")
-
-        return ExpressFeeRuleConfig(
-            exact_company_map=self._parse_mapping_text(
-                self.exact_text.get("1.0", tk.END),
-                "快递公司精确映射",
-            ),
-            keyword_company_rules=[
-                ExpressCompanyKeywordRule(keyword=keyword, standard_name=standard)
-                for keyword, standard in self._parse_ordered_mapping_text(
-                    self.keyword_text.get("1.0", tk.END),
-                    "快递公司关键词映射",
-                )
-            ],
-            large_piece_companies=large_piece_companies,
-            large_piece_threshold_kg=threshold,
-            large_piece_suffix=suffix,
+        return build_rule_config_from_text_fields(
+            exact_mapping_text=self.exact_text.get("1.0", tk.END),
+            keyword_mapping_text=self.keyword_text.get("1.0", tk.END),
+            large_companies_text=self.large_companies_var.get(),
+            threshold_text=self.threshold_var.get(),
+            suffix_text=self.suffix_var.get(),
         )
 
     def _parse_company_list(self, text: str) -> set[str]:
-        normalized = text.replace("，", ",").replace("、", ",").replace(";", ",")
-        return {item.strip() for item in normalized.split(",") if item.strip()}
+        return parse_company_list(text)
 
     def _parse_mapping_line(self, line: str, source_name: str, line_number: int) -> tuple[str, str]:
-        separator = "=>" if "=>" in line else "="
-        if separator not in line:
-            raise ValueError(f"{source_name} 第 {line_number} 行缺少 =。")
-        raw_name, standard_name = [part.strip() for part in line.split(separator, 1)]
-        if not raw_name or not standard_name:
-            raise ValueError(f"{source_name} 第 {line_number} 行不能有空值。")
-        return raw_name, standard_name
+        return parse_mapping_line(line, source_name, line_number)
 
     def _iter_mapping_lines(self, text: str):
-        for line_number, line in enumerate(text.splitlines(), start=1):
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            yield line_number, line
+        return iter_mapping_lines(text)
 
     def _parse_mapping_text(self, text: str, source_name: str) -> dict[str, str]:
-        mapping: dict[str, str] = {}
-        for line_number, line in self._iter_mapping_lines(text):
-            raw_name, standard_name = self._parse_mapping_line(line, source_name, line_number)
-            if raw_name in mapping:
-                raise ValueError(f"{source_name} 第 {line_number} 行重复：{raw_name}")
-            mapping[raw_name] = standard_name
-        if not mapping:
-            raise ValueError(f"{source_name}不能为空。")
-        return mapping
+        return parse_mapping_text(text, source_name)
 
     def _parse_ordered_mapping_text(self, text: str, source_name: str) -> list[tuple[str, str]]:
-        rules: list[tuple[str, str]] = []
-        seen_keywords: set[str] = set()
-        for line_number, line in self._iter_mapping_lines(text):
-            keyword, standard_name = self._parse_mapping_line(line, source_name, line_number)
-            if keyword in seen_keywords:
-                raise ValueError(f"{source_name} 第 {line_number} 行重复：{keyword}")
-            seen_keywords.add(keyword)
-            rules.append((keyword, standard_name))
-        if not rules:
-            raise ValueError(f"{source_name}不能为空。")
-        return rules
+        return parse_ordered_mapping_text(text, source_name)
 
 
 class ExpressFeeApp(tk.Tk):
@@ -361,9 +400,24 @@ class ExpressFeeApp(tk.Tk):
         self.summary_success_var = tk.StringVar(value="0")
         self.summary_failed_var = tk.StringVar(value="0")
         self.summary_outputs_var = tk.StringVar(value="0")
+        self.active_nav_var = tk.StringVar(value="费用计算")
+        self.module_title_var = tk.StringVar(value="费用计算")
+        self.module_subtitle_var = tk.StringVar(
+            value="按配置、运行、结果三个步骤完成快递费用计算和客户明细生成。"
+        )
+        self.nav_labels: dict[str, ttk.Label] = {}
+        self.content_container: ttk.Frame | None = None
+        self.fee_page: ttk.Frame | None = None
+        self.settings_page: ttk.Frame | None = None
+        self.settings_exact_text: tk.Text | None = None
+        self.settings_keyword_text: tk.Text | None = None
+        self.settings_large_companies_var = tk.StringVar()
+        self.settings_threshold_var = tk.StringVar()
+        self.settings_suffix_var = tk.StringVar()
 
         self._configure_styles()
         self._refresh_option_labels()
+        self._sync_rule_settings_vars()
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -560,7 +614,7 @@ class ExpressFeeApp(tk.Tk):
         )
         ttk.Label(
             header,
-            text="费用计算主流程",
+            textvariable=self.module_title_var,
             style="ModuleSub.TLabel",
             background=COLORS["surface"],
         ).grid(row=0, column=2, sticky="w", padx=(24, 0))
@@ -588,12 +642,20 @@ class ExpressFeeApp(tk.Tk):
             font=("Helvetica Neue", 10, "bold"),
         ).pack(anchor="w", padx=8, pady=(0, 8))
         for index, item in enumerate(V8_1_MAIN_NAV_ITEMS):
-            style_name = "NavActive.TLabel" if index == 0 else "NavDisabled.TLabel"
-            suffix = "" if index == 0 else "  后续"
-            ttk.Label(sidebar, text=f"{item}{suffix}", style=style_name).pack(
+            enabled = item in V8_2_ENABLED_NAV_ITEMS
+            label = ttk.Label(
+                sidebar,
+                text=item if enabled else f"{item}  后续",
+                style="NavActive.TLabel" if item == self.active_nav_var.get() else "NavDisabled.TLabel",
+                cursor="hand2" if enabled else "arrow",
+            )
+            label.pack(
                 fill=tk.X,
                 pady=(0, 4),
             )
+            self.nav_labels[item] = label
+            if enabled:
+                label.bind("<Button-1>", lambda _event, nav_item=item: self._show_page(nav_item))
         ttk.Frame(sidebar, style="Sidebar.TFrame").pack(fill=tk.BOTH, expand=True)
         self.run_button = ttk.Button(
             sidebar,
@@ -624,21 +686,41 @@ class ExpressFeeApp(tk.Tk):
         content = ttk.Frame(body, padding=16, style="Content.TFrame")
         content.grid(row=0, column=1, sticky="nsew")
         content.columnconfigure(0, weight=1)
-        content.rowconfigure(4, weight=1)
+        content.rowconfigure(2, weight=1)
 
-        ttk.Label(content, text="费用计算", style="ModuleTitle.TLabel").grid(
+        ttk.Label(content, textvariable=self.module_title_var, style="ModuleTitle.TLabel").grid(
             row=0,
             column=0,
             sticky="w",
         )
         ttk.Label(
             content,
-            text="按配置、运行、结果三个步骤完成快递费用计算和客户明细生成。",
+            textvariable=self.module_subtitle_var,
             style="ModuleSub.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(3, 12))
 
+        self.content_container = ttk.Frame(content, style="Content.TFrame")
+        self.content_container.grid(row=2, column=0, sticky="nsew")
+        self.content_container.columnconfigure(0, weight=1)
+        self.content_container.rowconfigure(0, weight=1)
+
+        self.fee_page = ttk.Frame(self.content_container, style="Content.TFrame")
+        self.fee_page.grid(row=0, column=0, sticky="nsew")
+        self.fee_page.columnconfigure(0, weight=1)
+        self.fee_page.rowconfigure(2, weight=1)
+        self._build_fee_calculation_page(self.fee_page)
+
+        self.settings_page = ttk.Frame(self.content_container, style="Content.TFrame")
+        self.settings_page.grid(row=0, column=0, sticky="nsew")
+        self.settings_page.columnconfigure(0, weight=1)
+        self.settings_page.rowconfigure(0, weight=1)
+        self._build_settings_page(self.settings_page)
+
+        self._show_page("费用计算")
+
+    def _build_fee_calculation_page(self, content: ttk.Frame) -> None:
         steps = ttk.Frame(content, style="Content.TFrame")
-        steps.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        steps.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         for index, step in enumerate(V8_1_WORKFLOW_STEPS, start=1):
             style_name = "StepActive.TLabel" if index == 1 else "StepIdle.TLabel"
             ttk.Label(steps, text=f"{index}. {step}", style=style_name).pack(
@@ -652,7 +734,7 @@ class ExpressFeeApp(tk.Tk):
             padding=14,
             style="Panel.TLabelframe",
         )
-        input_frame.grid(row=3, column=0, sticky="ew", pady=(0, 12))
+        input_frame.grid(row=1, column=0, sticky="ew", pady=(0, 12))
         input_frame.columnconfigure(1, weight=1)
 
         self._path_row(
@@ -693,7 +775,7 @@ class ExpressFeeApp(tk.Tk):
         ).pack(side=tk.LEFT)
 
         workspace = ttk.Frame(content, style="Content.TFrame")
-        workspace.grid(row=4, column=0, sticky="nsew", pady=(0, 12))
+        workspace.grid(row=2, column=0, sticky="nsew", pady=(0, 12))
         workspace.columnconfigure(0, weight=3)
         workspace.columnconfigure(1, weight=2)
         workspace.rowconfigure(0, weight=1)
@@ -781,6 +863,158 @@ class ExpressFeeApp(tk.Tk):
             borderwidth=0,
             font=("Menlo", 10),
         )
+
+    def _build_settings_page(self, content: ttk.Frame) -> None:
+        content.rowconfigure(0, weight=1)
+        content.columnconfigure(1, weight=1)
+
+        section_nav = ttk.Frame(content, padding=(0, 0, 12, 0), style="Content.TFrame")
+        section_nav.grid(row=0, column=0, sticky="ns")
+        for section in V8_2_SETTINGS_SECTIONS:
+            ttk.Label(
+                section_nav,
+                text=section,
+                style="StepActive.TLabel" if section == "目录配置" else "StepIdle.TLabel",
+            ).pack(fill=tk.X, pady=(0, 8))
+
+        settings_body = ttk.Frame(content, style="Content.TFrame")
+        settings_body.grid(row=0, column=1, sticky="nsew")
+        settings_body.columnconfigure(0, weight=1)
+        settings_body.columnconfigure(1, weight=1)
+        settings_body.rowconfigure(1, weight=1)
+        settings_body.rowconfigure(2, weight=1)
+
+        dirs_frame = ttk.LabelFrame(
+            settings_body,
+            text="目录配置",
+            padding=14,
+            style="Panel.TLabelframe",
+        )
+        dirs_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        dirs_frame.columnconfigure(1, weight=1)
+        self._path_row(dirs_frame, 0, "报价表目录", self.price_dir_var, self._choose_price_dir)
+        self._path_row(dirs_frame, 1, "总结果目录", self.output_dir_var, self._choose_output_dir)
+        self._path_row(dirs_frame, 2, "客户明细目录", self.split_dir_var, self._choose_split_dir)
+
+        exact_frame = ttk.LabelFrame(
+            settings_body,
+            text="精确映射",
+            padding=12,
+            style="Panel.TLabelframe",
+        )
+        exact_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 8), pady=(0, 12))
+        exact_frame.rowconfigure(1, weight=1)
+        exact_frame.columnconfigure(0, weight=1)
+        ttk.Label(
+            exact_frame,
+            text=EXPRESS_MAPPING_HELP_TEXT,
+            wraplength=360,
+            foreground=COLORS["muted"],
+            background=COLORS["surface"],
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.settings_exact_text = tk.Text(exact_frame, height=8, wrap=tk.NONE)
+        self.settings_exact_text.grid(row=1, column=0, sticky="nsew")
+
+        keyword_frame = ttk.LabelFrame(
+            settings_body,
+            text="关键词映射",
+            padding=12,
+            style="Panel.TLabelframe",
+        )
+        keyword_frame.grid(row=1, column=1, sticky="nsew", padx=(8, 0), pady=(0, 12))
+        keyword_frame.rowconfigure(1, weight=1)
+        keyword_frame.columnconfigure(0, weight=1)
+        ttk.Label(
+            keyword_frame,
+            text=KEYWORD_MAPPING_HELP_TEXT,
+            wraplength=360,
+            foreground=COLORS["muted"],
+            background=COLORS["surface"],
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.settings_keyword_text = tk.Text(keyword_frame, height=8, wrap=tk.NONE)
+        self.settings_keyword_text.grid(row=1, column=0, sticky="nsew")
+
+        large_frame = ttk.LabelFrame(
+            settings_body,
+            text="大件规则",
+            padding=14,
+            style="Panel.TLabelframe",
+        )
+        large_frame.grid(row=2, column=0, columnspan=2, sticky="ew")
+        large_frame.columnconfigure(1, weight=1)
+        ttk.Label(large_frame, text="大件快递", style="Field.TLabel").grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=5,
+        )
+        ttk.Entry(large_frame, textvariable=self.settings_large_companies_var).grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(10, 8),
+            pady=5,
+        )
+        ttk.Label(large_frame, text="重量阈值", style="Field.TLabel").grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=5,
+        )
+        ttk.Entry(large_frame, textvariable=self.settings_threshold_var, width=12).grid(
+            row=1,
+            column=1,
+            sticky="w",
+            padx=(10, 8),
+            pady=5,
+        )
+        ttk.Label(large_frame, text="模板后缀", style="Field.TLabel").grid(
+            row=2,
+            column=0,
+            sticky="w",
+            pady=5,
+        )
+        ttk.Entry(large_frame, textvariable=self.settings_suffix_var, width=16).grid(
+            row=2,
+            column=1,
+            sticky="w",
+            padx=(10, 8),
+            pady=5,
+        )
+
+        actions = ttk.Frame(settings_body, style="Content.TFrame")
+        actions.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        ttk.Button(
+            actions,
+            text="恢复默认规则",
+            command=self._restore_default_settings_rules,
+            style="Secondary.TButton",
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            actions,
+            text="保存系统设置",
+            command=self._save_settings_page,
+            style="Primary.TButton",
+        ).pack(side=tk.RIGHT)
+
+        self._load_rule_settings_text()
+
+    def _show_page(self, nav_item: str) -> None:
+        if nav_item not in V8_2_ENABLED_NAV_ITEMS:
+            return
+        self.active_nav_var.set(nav_item)
+        for item, label in self.nav_labels.items():
+            label.configure(style="NavActive.TLabel" if item == nav_item else "NavDisabled.TLabel")
+        if nav_item == "系统设置":
+            self.module_title_var.set("系统设置")
+            self.module_subtitle_var.set("维护目录配置、快递公司映射、关键词映射和大件模板规则。")
+            if self.settings_page is not None:
+                self.settings_page.tkraise()
+        else:
+            self.module_title_var.set("费用计算")
+            self.module_subtitle_var.set("按配置、运行、结果三个步骤完成快递费用计算和客户明细生成。")
+            if self.fee_page is not None:
+                self.fee_page.tkraise()
 
     def _traffic_lights(self, parent: ttk.Frame) -> ttk.Frame:
         frame = ttk.Frame(parent, style="Header.TFrame")
@@ -893,6 +1127,51 @@ class ExpressFeeApp(tk.Tk):
         self.refresh_all_option_label_var.set(
             format_option_label("刷新全部客户历史汇总", self.refresh_all_var.get())
         )
+
+    def _sync_rule_settings_vars(self) -> None:
+        self.settings_large_companies_var.set(format_large_piece_companies(self.rule_config))
+        self.settings_threshold_var.set(str(self.rule_config.large_piece_threshold_kg))
+        self.settings_suffix_var.set(self.rule_config.large_piece_suffix)
+
+    def _load_rule_settings_text(self) -> None:
+        self._sync_rule_settings_vars()
+        if self.settings_exact_text is not None:
+            self.settings_exact_text.delete("1.0", tk.END)
+            self.settings_exact_text.insert(tk.END, format_exact_mapping_text(self.rule_config))
+        if self.settings_keyword_text is not None:
+            self.settings_keyword_text.delete("1.0", tk.END)
+            self.settings_keyword_text.insert(tk.END, format_keyword_mapping_text(self.rule_config))
+
+    def _build_settings_rule_config(self) -> ExpressFeeRuleConfig:
+        exact_text = self.settings_exact_text.get("1.0", tk.END) if self.settings_exact_text else ""
+        keyword_text = (
+            self.settings_keyword_text.get("1.0", tk.END) if self.settings_keyword_text else ""
+        )
+        return build_rule_config_from_text_fields(
+            exact_mapping_text=exact_text,
+            keyword_mapping_text=keyword_text,
+            large_companies_text=self.settings_large_companies_var.get(),
+            threshold_text=self.settings_threshold_var.get(),
+            suffix_text=self.settings_suffix_var.get(),
+        )
+
+    def _restore_default_settings_rules(self) -> None:
+        self.rule_config = build_default_rule_config()
+        self._load_rule_settings_text()
+        self._save_current_config()
+        messagebox.showinfo("已恢复", "系统设置中的规则已恢复为默认值。")
+
+    def _save_settings_page(self) -> None:
+        try:
+            rule_config = self._build_settings_rule_config()
+        except ValueError as exc:
+            messagebox.showerror("规则错误", str(exc))
+            return
+
+        self.rule_config = rule_config
+        self._sync_rule_settings_vars()
+        self._save_current_config()
+        messagebox.showinfo("已保存", "系统设置已保存。")
 
     def _format_sales_files_display(self) -> str:
         if not self.sales_files:
@@ -1223,10 +1502,11 @@ class ExpressFeeApp(tk.Tk):
         self._open_existing_path(directory)
 
     def _open_rule_config(self) -> None:
-        RuleConfigWindow(self, self.rule_config, self._apply_rule_config)
+        self._show_page("系统设置")
 
     def _apply_rule_config(self, rule_config: ExpressFeeRuleConfig) -> None:
         self.rule_config = rule_config
+        self._load_rule_settings_text()
         self._save_current_config()
 
     def _save_current_config(self) -> None:
