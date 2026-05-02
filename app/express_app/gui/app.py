@@ -41,6 +41,14 @@ V8_1_MAIN_NAV_ITEMS = (
 V8_1_WORKFLOW_STEPS = ("配置", "运行", "结果")
 V8_2_ENABLED_NAV_ITEMS = ("费用计算", "系统设置")
 V8_2_SETTINGS_SECTIONS = ("目录配置", "精确映射", "关键词映射", "大件规则")
+V8_2_1_WORKFLOW_STEPS = (
+    ("config", "配置"),
+    ("run", "运行"),
+    ("results", "结果"),
+)
+V8_2_1_AUTO_WORKFLOW_TRANSITIONS = {"on_start": "run", "on_done": "results"}
+V8_2_1_CONFIG_PAGE_SECTIONS = ("销售出库单", "当前系统设置", "生成选项")
+V8_2_1_CONFIG_SYSTEM_DIRECTORY_LABELS = ("报价表目录", "总结果目录", "客户明细目录")
 OPTION_SELECTED_PREFIX = "✅"
 OPTION_UNSELECTED_PREFIX = "□"
 RULE_WINDOW_TITLE = "快递识别与大件规则"
@@ -401,11 +409,15 @@ class ExpressFeeApp(tk.Tk):
         self.summary_failed_var = tk.StringVar(value="0")
         self.summary_outputs_var = tk.StringVar(value="0")
         self.active_nav_var = tk.StringVar(value="费用计算")
+        self.active_workflow_var = tk.StringVar(value="config")
         self.module_title_var = tk.StringVar(value="费用计算")
         self.module_subtitle_var = tk.StringVar(
             value="按配置、运行、结果三个步骤完成快递费用计算和客户明细生成。"
         )
         self.nav_labels: dict[str, ttk.Label] = {}
+        self.workflow_step_labels: dict[str, ttk.Label] = {}
+        self.workflow_pages: dict[str, ttk.Frame] = {}
+        self.run_buttons: list[ttk.Button] = []
         self.content_container: ttk.Frame | None = None
         self.fee_page: ttk.Frame | None = None
         self.settings_page: ttk.Frame | None = None
@@ -663,10 +675,11 @@ class ExpressFeeApp(tk.Tk):
             command=self._start_job,
             style="Primary.TButton",
         )
+        self.run_buttons.append(self.run_button)
         self.run_button.pack(fill=tk.X, pady=(0, 8))
         ttk.Button(
             sidebar,
-            text="规则配置",
+            text="系统设置",
             command=self._open_rule_config,
             style="Secondary.TButton",
         ).pack(fill=tk.X, pady=(0, 8))
@@ -719,22 +732,64 @@ class ExpressFeeApp(tk.Tk):
         self._show_page("费用计算")
 
     def _build_fee_calculation_page(self, content: ttk.Frame) -> None:
+        content.rowconfigure(1, weight=1)
+        content.columnconfigure(0, weight=1)
+
         steps = ttk.Frame(content, style="Content.TFrame")
         steps.grid(row=0, column=0, sticky="ew", pady=(0, 12))
-        for index, step in enumerate(V8_1_WORKFLOW_STEPS, start=1):
-            style_name = "StepActive.TLabel" if index == 1 else "StepIdle.TLabel"
-            ttk.Label(steps, text=f"{index}. {step}", style=style_name).pack(
+        self.workflow_step_labels.clear()
+        for index, (step_id, step_label) in enumerate(V8_2_1_WORKFLOW_STEPS, start=1):
+            style_name = "StepActive.TLabel" if step_id == "config" else "StepIdle.TLabel"
+            label = ttk.Label(
+                steps,
+                text=f"{index}. {step_label}",
+                style=style_name,
+                cursor="hand2",
+            )
+            label.pack(
                 side=tk.LEFT,
                 padx=(0, 8),
             )
+            label.bind(
+                "<Button-1>",
+                lambda _event, target_step=step_id: self._show_workflow_step(target_step),
+            )
+            self.workflow_step_labels[step_id] = label
+
+        page_container = ttk.Frame(content, style="Content.TFrame")
+        page_container.grid(row=1, column=0, sticky="nsew")
+        page_container.columnconfigure(0, weight=1)
+        page_container.rowconfigure(0, weight=1)
+        self.workflow_pages.clear()
+
+        config_page = ttk.Frame(page_container, style="Content.TFrame")
+        config_page.grid(row=0, column=0, sticky="nsew")
+        self._build_fee_config_page(config_page)
+        self.workflow_pages["config"] = config_page
+
+        run_page = ttk.Frame(page_container, style="Content.TFrame")
+        run_page.grid(row=0, column=0, sticky="nsew")
+        self._build_fee_run_page(run_page)
+        self.workflow_pages["run"] = run_page
+
+        results_page = ttk.Frame(page_container, style="Content.TFrame")
+        results_page.grid(row=0, column=0, sticky="nsew")
+        self._build_fee_results_page(results_page)
+        self.workflow_pages["results"] = results_page
+
+        self._show_workflow_step("config")
+
+    def _build_fee_config_page(self, content: ttk.Frame) -> None:
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(1, weight=1)
 
         input_frame = ttk.LabelFrame(
             content,
-            text="配置",
+            text="销售出库单",
             padding=14,
             style="Panel.TLabelframe",
         )
-        input_frame.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        input_frame.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         input_frame.columnconfigure(1, weight=1)
 
         self._path_row(
@@ -746,47 +801,137 @@ class ExpressFeeApp(tk.Tk):
             button_text="多选",
             entry_state="readonly",
         )
-        self._path_row(input_frame, 1, "报价表目录", self.price_dir_var, self._choose_price_dir)
-        self._path_row(input_frame, 2, "总结果目录", self.output_dir_var, self._choose_output_dir)
-        self._path_row(input_frame, 3, "客户明细目录", self.split_dir_var, self._choose_split_dir)
 
-        options = ttk.Frame(input_frame, style="Surface.TFrame")
-        options.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        settings_frame = ttk.LabelFrame(
+            content,
+            text="当前系统设置",
+            padding=14,
+            style="Panel.TLabelframe",
+        )
+        settings_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 12))
+        settings_frame.columnconfigure(1, weight=1)
+        self._directory_summary_row(settings_frame, 0, "报价表目录", self.price_dir_var)
+        self._directory_summary_row(settings_frame, 1, "总结果目录", self.output_dir_var)
+        self._directory_summary_row(settings_frame, 2, "客户明细目录", self.split_dir_var)
+        ttk.Button(
+            settings_frame,
+            text="去系统设置修改",
+            command=lambda: self._show_page("系统设置"),
+            style="Secondary.TButton",
+        ).grid(row=3, column=0, columnspan=2, sticky="e", pady=(10, 0))
+
+        options_frame = ttk.LabelFrame(
+            content,
+            text="生成选项",
+            padding=14,
+            style="Panel.TLabelframe",
+        )
+        options_frame.grid(row=2, column=0, sticky="ew")
+        options_frame.columnconfigure(0, weight=1)
+
         ttk.Checkbutton(
-            options,
+            options_frame,
             textvariable=self.split_option_label_var,
             variable=self.split_var,
             command=self._sync_option_state,
             style="App.TCheckbutton",
-        ).pack(side=tk.LEFT, padx=(0, 18))
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
         ttk.Checkbutton(
-            options,
+            options_frame,
             textvariable=self.history_option_label_var,
             variable=self.history_var,
             command=self._sync_option_state,
             style="App.TCheckbutton",
-        ).pack(side=tk.LEFT, padx=(0, 18))
+        ).grid(row=1, column=0, sticky="ew", pady=(0, 8))
         ttk.Checkbutton(
-            options,
+            options_frame,
             textvariable=self.refresh_all_option_label_var,
             variable=self.refresh_all_var,
             command=self._sync_option_state,
             style="App.TCheckbutton",
+        ).grid(row=2, column=0, sticky="ew")
+
+        config_actions = ttk.Frame(content, style="Content.TFrame")
+        config_actions.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        ttk.Button(
+            config_actions,
+            text="去系统设置",
+            command=lambda: self._show_page("系统设置"),
+            style="Secondary.TButton",
         ).pack(side=tk.LEFT)
+        run_button = ttk.Button(
+            config_actions,
+            text="开始计算",
+            command=self._start_job,
+            style="Primary.TButton",
+        )
+        run_button.pack(side=tk.RIGHT)
+        self.run_buttons.append(run_button)
 
-        workspace = ttk.Frame(content, style="Content.TFrame")
-        workspace.grid(row=2, column=0, sticky="nsew", pady=(0, 12))
-        workspace.columnconfigure(0, weight=3)
-        workspace.columnconfigure(1, weight=2)
-        workspace.rowconfigure(0, weight=1)
+    def _build_fee_run_page(self, content: ttk.Frame) -> None:
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(2, weight=1)
 
-        result_column = ttk.Frame(workspace, style="Content.TFrame")
-        result_column.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        result_column.columnconfigure(0, weight=1)
-        result_column.rowconfigure(1, weight=1)
+        status_frame = ttk.LabelFrame(
+            content,
+            text="运行状态",
+            padding=14,
+            style="Panel.TLabelframe",
+        )
+        status_frame.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        status_frame.columnconfigure(1, weight=1)
+        ttk.Label(status_frame, text="当前状态", style="Field.TLabel").grid(
+            row=0,
+            column=0,
+            sticky="w",
+        )
+        ttk.Label(status_frame, textvariable=self.status_var, style="Status.TLabel").grid(
+            row=0,
+            column=1,
+            sticky="w",
+            padx=(12, 0),
+        )
+        run_button = ttk.Button(
+            status_frame,
+            text="开始计算",
+            command=self._start_job,
+            style="Primary.TButton",
+        )
+        run_button.grid(row=0, column=2, sticky="e")
+        self.run_buttons.append(run_button)
 
-        summary_frame = ttk.Frame(result_column, style="Content.TFrame")
-        summary_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        summary_frame = ttk.Frame(content, style="Content.TFrame")
+        summary_frame.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        for column in range(4):
+            summary_frame.columnconfigure(column, weight=1)
+        self._metric(summary_frame, 0, "销售表", self.summary_sales_files_var)
+        self._metric(summary_frame, 1, "成功", self.summary_success_var)
+        self._metric(summary_frame, 2, "失败", self.summary_failed_var)
+        self._metric(summary_frame, 3, "生成文件", self.summary_outputs_var)
+
+        log_frame = ttk.LabelFrame(content, text="运行日志", padding=8, style="Panel.TLabelframe")
+        log_frame.grid(row=2, column=0, sticky="nsew")
+        log_frame.rowconfigure(0, weight=1)
+        log_frame.columnconfigure(0, weight=1)
+
+        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=13)
+        self.log_text.grid(row=0, column=0, sticky="nsew")
+        self.log_text.configure(
+            state=tk.DISABLED,
+            bg=COLORS["log_bg"],
+            fg=COLORS["log_text"],
+            insertbackground=COLORS["log_text"],
+            relief=tk.FLAT,
+            borderwidth=0,
+            font=("Menlo", 10),
+        )
+
+    def _build_fee_results_page(self, content: ttk.Frame) -> None:
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(1, weight=1)
+
+        summary_frame = ttk.Frame(content, style="Content.TFrame")
+        summary_frame.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         for column in range(4):
             summary_frame.columnconfigure(column, weight=1)
         self._metric(summary_frame, 0, "销售表", self.summary_sales_files_var)
@@ -795,8 +940,8 @@ class ExpressFeeApp(tk.Tk):
         self._metric(summary_frame, 3, "生成文件", self.summary_outputs_var)
 
         result_frame = ttk.LabelFrame(
-            result_column,
-            text="结果",
+            content,
+            text="生成结果",
             padding=8,
             style="Panel.TLabelframe",
         )
@@ -846,23 +991,22 @@ class ExpressFeeApp(tk.Tk):
         ).pack(
             side=tk.LEFT, padx=(10, 0)
         )
-
-        log_frame = ttk.LabelFrame(workspace, text="运行", padding=8, style="Panel.TLabelframe")
-        log_frame.grid(row=0, column=1, sticky="nsew")
-        log_frame.rowconfigure(0, weight=1)
-        log_frame.columnconfigure(0, weight=1)
-
-        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=13)
-        self.log_text.grid(row=0, column=0, sticky="nsew")
-        self.log_text.configure(
-            state=tk.DISABLED,
-            bg=COLORS["log_bg"],
-            fg=COLORS["log_text"],
-            insertbackground=COLORS["log_text"],
-            relief=tk.FLAT,
-            borderwidth=0,
-            font=("Menlo", 10),
+        ttk.Button(
+            result_actions,
+            text="打开输出目录",
+            command=self._open_output_dir,
+            style="Secondary.TButton",
+        ).pack(
+            side=tk.LEFT, padx=(10, 0)
         )
+        rerun_button = ttk.Button(
+            result_actions,
+            text="重新运行",
+            command=self._start_job,
+            style="Primary.TButton",
+        )
+        rerun_button.pack(side=tk.RIGHT)
+        self.run_buttons.append(rerun_button)
 
     def _build_settings_page(self, content: ttk.Frame) -> None:
         content.rowconfigure(0, weight=1)
@@ -1016,6 +1160,18 @@ class ExpressFeeApp(tk.Tk):
             if self.fee_page is not None:
                 self.fee_page.tkraise()
 
+    def _show_workflow_step(self, step_id: str) -> None:
+        if step_id not in self.workflow_pages:
+            return
+        self.active_workflow_var.set(step_id)
+        for item, label in self.workflow_step_labels.items():
+            label.configure(style="StepActive.TLabel" if item == step_id else "StepIdle.TLabel")
+        self.workflow_pages[step_id].tkraise()
+
+    def _set_run_buttons_state(self, state: str) -> None:
+        for button in self.run_buttons:
+            button.configure(state=state)
+
     def _traffic_lights(self, parent: ttk.Frame) -> ttk.Frame:
         frame = ttk.Frame(parent, style="Header.TFrame")
         for color in ("#ff5f57", "#febc2e", "#28c840"):
@@ -1054,6 +1210,29 @@ class ExpressFeeApp(tk.Tk):
             command=command,
             style="Secondary.TButton",
         ).grid(row=row, column=2, pady=5)
+
+    def _directory_summary_row(
+        self,
+        parent: ttk.Frame,
+        row: int,
+        label: str,
+        variable: tk.StringVar,
+    ) -> None:
+        ttk.Label(parent, text=label, style="Field.TLabel").grid(
+            row=row,
+            column=0,
+            sticky="w",
+            pady=5,
+        )
+        value = ttk.Label(
+            parent,
+            textvariable=variable,
+            background=COLORS["surface"],
+            foreground=COLORS["muted"],
+            font=("Menlo", 10),
+            wraplength=620,
+        )
+        value.grid(row=row, column=1, sticky="ew", padx=(10, 0), pady=5)
 
     def _metric(self, parent: ttk.Frame, column: int, label: str, variable: tk.StringVar) -> None:
         frame = ttk.Frame(parent, padding=(12, 10), style="Surface.TFrame")
@@ -1183,6 +1362,7 @@ class ExpressFeeApp(tk.Tk):
 
     def _start_job(self) -> None:
         if self._worker and self._worker.is_alive():
+            self._show_workflow_step("run")
             messagebox.showinfo("正在运行", "当前任务还在运行，请稍等。")
             return
 
@@ -1196,7 +1376,9 @@ class ExpressFeeApp(tk.Tk):
         self._reset_summary()
         self._append_log("开始运行...")
         self.status_var.set("运行中")
-        self.run_button.configure(state=tk.DISABLED)
+        self._show_page("费用计算")
+        self._show_workflow_step(V8_2_1_AUTO_WORKFLOW_TRANSITIONS["on_start"])
+        self._set_run_buttons_state(tk.DISABLED)
         self._last_result = None
 
         self._worker = threading.Thread(
@@ -1543,7 +1725,8 @@ class ExpressFeeApp(tk.Tk):
             self._populate_result_table(result)
             self._update_summary(result)
             self.status_var.set("完成" if result.ok else "完成，有错误")
-            self.run_button.configure(state=tk.NORMAL)
+            self._set_run_buttons_state(tk.NORMAL)
+            self._show_workflow_step(V8_2_1_AUTO_WORKFLOW_TRANSITIONS["on_done"])
             if result.ok:
                 messagebox.showinfo("运行完成", "快递费计算已完成。")
             else:
@@ -1551,7 +1734,8 @@ class ExpressFeeApp(tk.Tk):
         elif kind == "error":
             self._append_log(f"运行失败：{payload}")
             self.status_var.set("失败")
-            self.run_button.configure(state=tk.NORMAL)
+            self._set_run_buttons_state(tk.NORMAL)
+            self._show_workflow_step("run")
             messagebox.showerror("运行失败", str(payload))
 
     def _append_log(self, text: str) -> None:
