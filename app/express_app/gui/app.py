@@ -25,11 +25,20 @@ from express_app.core.models import (
 )
 from express_app.core import run_express_fee_batch_job
 from express_app.gui.config_store import GuiConfig, load_gui_config, save_gui_config
+from express_app.gui.design_tokens import GUI_COLORS, GUI_FONTS, GUI_LAYOUT
 from express_app.version import APP_DISPLAY_NAME, APP_VERSION_LABEL
 
 
 APP_TITLE = f"{APP_DISPLAY_NAME} {APP_VERSION_LABEL}"
 OUTPUT_VERSION_LABEL = APP_VERSION_LABEL
+V8_1_MAIN_NAV_ITEMS = (
+    "费用计算",
+    "账户余额",
+    "报价预览",
+    "客户档案",
+    "系统设置",
+)
+V8_1_WORKFLOW_STEPS = ("配置", "运行", "结果")
 OPTION_SELECTED_PREFIX = "✅"
 OPTION_UNSELECTED_PREFIX = "□"
 RULE_WINDOW_TITLE = "快递识别与大件规则"
@@ -47,17 +56,29 @@ LARGE_RULE_HELP_TEXT = (
 )
 
 COLORS = {
-    "background": "#F8FAFC",
-    "surface": "#FFFFFF",
-    "surface_alt": "#EFF6FF",
-    "border": "#CBD5E1",
-    "primary": "#1E40AF",
-    "primary_dark": "#1E3A8A",
-    "accent": "#F59E0B",
-    "success": "#16A34A",
-    "danger": "#DC2626",
-    "text": "#0F172A",
-    "muted": "#475569",
+    "background": GUI_COLORS["background"],
+    "surface": GUI_COLORS["surface"],
+    "surface_alt": GUI_COLORS["surface2"],
+    "border": GUI_COLORS["border"],
+    "border2": GUI_COLORS["border2"],
+    "primary": GUI_COLORS["accent"],
+    "primary_dark": GUI_COLORS["accent"],
+    "accent": GUI_COLORS["warning"],
+    "accent_light": GUI_COLORS["accent_light"],
+    "accent_bg": GUI_COLORS["accent_bg"],
+    "accent_border": GUI_COLORS["accent_border"],
+    "success": GUI_COLORS["success"],
+    "success_bg": GUI_COLORS["success_bg"],
+    "warning": GUI_COLORS["warning"],
+    "warning_bg": GUI_COLORS["warning_bg"],
+    "danger": GUI_COLORS["danger"],
+    "danger_bg": GUI_COLORS["danger_bg"],
+    "text": GUI_COLORS["text"],
+    "muted": GUI_COLORS["muted"],
+    "dim": GUI_COLORS["dim"],
+    "sidebar": GUI_COLORS["sidebar"],
+    "log_bg": GUI_COLORS["log_bg"],
+    "log_text": GUI_COLORS["log_text"],
 }
 
 
@@ -312,8 +333,8 @@ class ExpressFeeApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("1160x780")
-        self.minsize(1040, 720)
+        self.geometry(f"{GUI_LAYOUT['app_width']}x{GUI_LAYOUT['app_height']}")
+        self.minsize(GUI_LAYOUT["app_width"], GUI_LAYOUT["app_height"])
         self.configure(bg=COLORS["background"])
 
         self._queue: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -354,27 +375,71 @@ class ExpressFeeApp(tk.Tk):
             pass
 
         font_family = "Helvetica Neue"
+        mono_family = "Menlo"
         style.configure("App.TFrame", background=COLORS["background"])
         style.configure("Surface.TFrame", background=COLORS["surface"])
-        style.configure("Header.TFrame", background=COLORS["primary"])
+        style.configure("Shell.TFrame", background=COLORS["background"])
+        style.configure("Sidebar.TFrame", background=COLORS["sidebar"])
+        style.configure("Content.TFrame", background=COLORS["background"])
+        style.configure("Header.TFrame", background=COLORS["surface"])
         style.configure(
             "Title.TLabel",
-            background=COLORS["primary"],
-            foreground="#FFFFFF",
-            font=(font_family, 20, "bold"),
+            background=COLORS["surface"],
+            foreground=COLORS["text"],
+            font=(font_family, 18, "bold"),
         )
         style.configure(
             "HeaderMeta.TLabel",
-            background=COLORS["primary"],
-            foreground="#DBEAFE",
-            font=(font_family, 11),
+            background=COLORS["surface"],
+            foreground=COLORS["muted"],
+            font=(mono_family, 10),
         )
         style.configure(
             "Status.TLabel",
-            background=COLORS["accent"],
-            foreground="#111827",
-            padding=(12, 5),
+            background=COLORS["success_bg"],
+            foreground=COLORS["success"],
+            padding=(10, 4),
             font=(font_family, 11, "bold"),
+        )
+        style.configure(
+            "ModuleTitle.TLabel",
+            background=COLORS["background"],
+            foreground=COLORS["text"],
+            font=(font_family, 16, "bold"),
+        )
+        style.configure(
+            "ModuleSub.TLabel",
+            background=COLORS["background"],
+            foreground=COLORS["muted"],
+            font=(font_family, 11),
+        )
+        style.configure(
+            "NavActive.TLabel",
+            background=COLORS["accent_bg"],
+            foreground=COLORS["primary"],
+            padding=(12, 10),
+            font=(font_family, 12, "bold"),
+        )
+        style.configure(
+            "NavDisabled.TLabel",
+            background=COLORS["sidebar"],
+            foreground=COLORS["muted"],
+            padding=(12, 10),
+            font=(font_family, 12),
+        )
+        style.configure(
+            "StepActive.TLabel",
+            background=COLORS["accent_bg"],
+            foreground=COLORS["primary"],
+            padding=(10, 6),
+            font=(font_family, 11, "bold"),
+        )
+        style.configure(
+            "StepIdle.TLabel",
+            background=COLORS["surface_alt"],
+            foreground=COLORS["muted"],
+            padding=(10, 6),
+            font=(font_family, 11),
         )
         style.configure(
             "Panel.TLabelframe",
@@ -395,17 +460,25 @@ class ExpressFeeApp(tk.Tk):
             font=(font_family, 11),
         )
         style.configure(
+            "Path.TEntry",
+            fieldbackground=COLORS["surface_alt"],
+            foreground=COLORS["text"],
+            insertcolor=COLORS["text"],
+            bordercolor=COLORS["border"],
+            font=(mono_family, 11),
+        )
+        style.configure(
             "MetricLabel.TLabel",
-            background=COLORS["surface_alt"],
+            background=COLORS["surface"],
             foreground=COLORS["muted"],
             font=(font_family, 10),
             anchor="center",
         )
         style.configure(
             "MetricValue.TLabel",
-            background=COLORS["surface_alt"],
+            background=COLORS["surface"],
             foreground=COLORS["primary_dark"],
-            font=(font_family, 18, "bold"),
+            font=(mono_family, 16, "bold"),
             anchor="center",
         )
         style.configure(
@@ -417,28 +490,29 @@ class ExpressFeeApp(tk.Tk):
         )
         style.map(
             "Primary.TButton",
-            background=[("active", COLORS["primary_dark"]), ("disabled", "#94A3B8")],
+            background=[("active", COLORS["accent_light"]), ("disabled", COLORS["dim"])],
             foreground=[("disabled", "#E2E8F0")],
         )
         style.configure(
             "Secondary.TButton",
-            background="#E2E8F0",
-            foreground=COLORS["text"],
+            background=COLORS["surface"],
+            foreground=COLORS["muted"],
             font=(font_family, 11),
-            padding=(12, 8),
+            padding=(10, 7),
+            bordercolor=COLORS["border"],
         )
-        style.map("Secondary.TButton", background=[("active", "#CBD5E1")])
+        style.map("Secondary.TButton", background=[("active", COLORS["surface_alt"])])
         style.configure(
             "App.TCheckbutton",
             background=COLORS["surface"],
             foreground=COLORS["text"],
             font=(font_family, 11),
             indicatoron=False,
-            padding=(8, 5),
+            padding=(10, 7),
         )
         style.map(
             "App.TCheckbutton",
-            background=[("selected", COLORS["surface_alt"]), ("active", COLORS["surface_alt"])],
+            background=[("selected", COLORS["accent_bg"]), ("active", COLORS["surface_alt"])],
             foreground=[("selected", COLORS["primary_dark"])],
         )
         style.configure(
@@ -464,39 +538,121 @@ class ExpressFeeApp(tk.Tk):
         )
 
     def _build_ui(self) -> None:
-        root = ttk.Frame(self, padding=16, style="App.TFrame")
+        root = ttk.Frame(self, padding=0, style="Shell.TFrame")
         root.pack(fill=tk.BOTH, expand=True)
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(4, weight=1)
+        root.rowconfigure(1, weight=1)
 
-        header = ttk.Frame(root, padding=(18, 14), style="Header.TFrame")
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 14))
-        header.columnconfigure(0, weight=1)
+        header = ttk.Frame(root, padding=(20, 10), style="Header.TFrame")
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(2, weight=1)
+        self._traffic_lights(header).grid(row=0, column=0, rowspan=2, sticky="w", padx=(0, 14))
         ttk.Label(header, text=APP_DISPLAY_NAME, style="Title.TLabel").grid(
             row=0,
-            column=0,
+            column=1,
             sticky="w",
         )
         ttk.Label(header, text=OUTPUT_VERSION_LABEL, style="HeaderMeta.TLabel").grid(
             row=1,
-            column=0,
+            column=1,
             sticky="w",
             pady=(3, 0),
         )
+        ttk.Label(
+            header,
+            text="费用计算主流程",
+            style="ModuleSub.TLabel",
+            background=COLORS["surface"],
+        ).grid(row=0, column=2, sticky="w", padx=(24, 0))
         ttk.Label(header, textvariable=self.status_var, style="Status.TLabel").grid(
             row=0,
-            column=1,
+            column=3,
             rowspan=2,
             sticky="e",
         )
 
+        body = ttk.Frame(root, style="App.TFrame")
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        sidebar = ttk.Frame(body, padding=(10, 14), style="Sidebar.TFrame")
+        sidebar.grid(row=0, column=0, sticky="ns")
+        sidebar.configure(width=GUI_LAYOUT["sidebar_width"])
+        sidebar.grid_propagate(False)
+        ttk.Label(
+            sidebar,
+            text="工作台",
+            background=COLORS["sidebar"],
+            foreground=COLORS["muted"],
+            font=("Helvetica Neue", 10, "bold"),
+        ).pack(anchor="w", padx=8, pady=(0, 8))
+        for index, item in enumerate(V8_1_MAIN_NAV_ITEMS):
+            style_name = "NavActive.TLabel" if index == 0 else "NavDisabled.TLabel"
+            suffix = "" if index == 0 else "  后续"
+            ttk.Label(sidebar, text=f"{item}{suffix}", style=style_name).pack(
+                fill=tk.X,
+                pady=(0, 4),
+            )
+        ttk.Frame(sidebar, style="Sidebar.TFrame").pack(fill=tk.BOTH, expand=True)
+        self.run_button = ttk.Button(
+            sidebar,
+            text="开始计算",
+            command=self._start_job,
+            style="Primary.TButton",
+        )
+        self.run_button.pack(fill=tk.X, pady=(0, 8))
+        ttk.Button(
+            sidebar,
+            text="规则配置",
+            command=self._open_rule_config,
+            style="Secondary.TButton",
+        ).pack(fill=tk.X, pady=(0, 8))
+        ttk.Button(
+            sidebar,
+            text="打开输出目录",
+            command=self._open_output_dir,
+            style="Secondary.TButton",
+        ).pack(fill=tk.X, pady=(0, 8))
+        ttk.Button(
+            sidebar,
+            text="打开客户目录",
+            command=self._open_split_dir,
+            style="Secondary.TButton",
+        ).pack(fill=tk.X)
+
+        content = ttk.Frame(body, padding=16, style="Content.TFrame")
+        content.grid(row=0, column=1, sticky="nsew")
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(4, weight=1)
+
+        ttk.Label(content, text="费用计算", style="ModuleTitle.TLabel").grid(
+            row=0,
+            column=0,
+            sticky="w",
+        )
+        ttk.Label(
+            content,
+            text="按配置、运行、结果三个步骤完成快递费用计算和客户明细生成。",
+            style="ModuleSub.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(3, 12))
+
+        steps = ttk.Frame(content, style="Content.TFrame")
+        steps.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        for index, step in enumerate(V8_1_WORKFLOW_STEPS, start=1):
+            style_name = "StepActive.TLabel" if index == 1 else "StepIdle.TLabel"
+            ttk.Label(steps, text=f"{index}. {step}", style=style_name).pack(
+                side=tk.LEFT,
+                padx=(0, 8),
+            )
+
         input_frame = ttk.LabelFrame(
-            root,
-            text="输入设置",
-            padding=12,
+            content,
+            text="配置",
+            padding=14,
             style="Panel.TLabelframe",
         )
-        input_frame.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        input_frame.grid(row=3, column=0, sticky="ew", pady=(0, 12))
         input_frame.columnconfigure(1, weight=1)
 
         self._path_row(
@@ -536,8 +692,19 @@ class ExpressFeeApp(tk.Tk):
             style="App.TCheckbutton",
         ).pack(side=tk.LEFT)
 
-        summary_frame = ttk.Frame(root, style="App.TFrame")
-        summary_frame.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        workspace = ttk.Frame(content, style="Content.TFrame")
+        workspace.grid(row=4, column=0, sticky="nsew", pady=(0, 12))
+        workspace.columnconfigure(0, weight=3)
+        workspace.columnconfigure(1, weight=2)
+        workspace.rowconfigure(0, weight=1)
+
+        result_column = ttk.Frame(workspace, style="Content.TFrame")
+        result_column.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        result_column.columnconfigure(0, weight=1)
+        result_column.rowconfigure(1, weight=1)
+
+        summary_frame = ttk.Frame(result_column, style="Content.TFrame")
+        summary_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         for column in range(4):
             summary_frame.columnconfigure(column, weight=1)
         self._metric(summary_frame, 0, "销售表", self.summary_sales_files_var)
@@ -545,31 +712,13 @@ class ExpressFeeApp(tk.Tk):
         self._metric(summary_frame, 2, "失败", self.summary_failed_var)
         self._metric(summary_frame, 3, "生成文件", self.summary_outputs_var)
 
-        workspace = ttk.Frame(root, style="App.TFrame")
-        workspace.grid(row=4, column=0, sticky="nsew", pady=(0, 12))
-        workspace.columnconfigure(0, weight=2)
-        workspace.columnconfigure(1, weight=3)
-        workspace.rowconfigure(0, weight=1)
-
-        log_frame = ttk.LabelFrame(workspace, text="运行日志", padding=8, style="Panel.TLabelframe")
-        log_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        log_frame.rowconfigure(0, weight=1)
-        log_frame.columnconfigure(0, weight=1)
-
-        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=13)
-        self.log_text.grid(row=0, column=0, sticky="nsew")
-        self.log_text.configure(
-            state=tk.DISABLED,
-            bg=COLORS["surface"],
-            fg=COLORS["text"],
-            insertbackground=COLORS["text"],
-            relief=tk.FLAT,
-            borderwidth=0,
-            font=("Menlo", 10),
+        result_frame = ttk.LabelFrame(
+            result_column,
+            text="结果",
+            padding=8,
+            style="Panel.TLabelframe",
         )
-
-        result_frame = ttk.LabelFrame(workspace, text="生成结果", padding=8, style="Panel.TLabelframe")
-        result_frame.grid(row=0, column=1, sticky="nsew")
+        result_frame.grid(row=1, column=0, sticky="nsew")
         result_frame.rowconfigure(0, weight=1)
         result_frame.columnconfigure(0, weight=1)
 
@@ -597,25 +746,10 @@ class ExpressFeeApp(tk.Tk):
         result_scroll.grid(row=0, column=1, sticky="ns")
         self.result_tree.configure(yscrollcommand=result_scroll.set)
 
-        actions = ttk.Frame(root, style="App.TFrame")
-        actions.grid(row=5, column=0, sticky="ew")
-        self.run_button = ttk.Button(
-            actions,
-            text="开始运行",
-            command=self._start_job,
-            style="Primary.TButton",
-        )
-        self.run_button.pack(side=tk.LEFT)
+        result_actions = ttk.Frame(result_frame, style="Surface.TFrame")
+        result_actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Button(
-            actions,
-            text="规则配置",
-            command=self._open_rule_config,
-            style="Secondary.TButton",
-        ).pack(
-            side=tk.LEFT, padx=(10, 0)
-        )
-        ttk.Button(
-            actions,
+            result_actions,
             text="打开选中文件",
             command=self._open_selected_result,
             style="Secondary.TButton",
@@ -623,29 +757,44 @@ class ExpressFeeApp(tk.Tk):
             side=tk.LEFT
         )
         ttk.Button(
-            actions,
+            result_actions,
             text="打开所在目录",
             command=self._open_selected_result_dir,
             style="Secondary.TButton",
         ).pack(
             side=tk.LEFT, padx=(10, 0)
         )
-        ttk.Button(
-            actions,
-            text="打开输出目录",
-            command=self._open_output_dir,
-            style="Secondary.TButton",
-        ).pack(
-            side=tk.LEFT, padx=(10, 0)
+
+        log_frame = ttk.LabelFrame(workspace, text="运行", padding=8, style="Panel.TLabelframe")
+        log_frame.grid(row=0, column=1, sticky="nsew")
+        log_frame.rowconfigure(0, weight=1)
+        log_frame.columnconfigure(0, weight=1)
+
+        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=13)
+        self.log_text.grid(row=0, column=0, sticky="nsew")
+        self.log_text.configure(
+            state=tk.DISABLED,
+            bg=COLORS["log_bg"],
+            fg=COLORS["log_text"],
+            insertbackground=COLORS["log_text"],
+            relief=tk.FLAT,
+            borderwidth=0,
+            font=("Menlo", 10),
         )
-        ttk.Button(
-            actions,
-            text="打开客户目录",
-            command=self._open_split_dir,
-            style="Secondary.TButton",
-        ).pack(
-            side=tk.LEFT, padx=(10, 0)
-        )
+
+    def _traffic_lights(self, parent: ttk.Frame) -> ttk.Frame:
+        frame = ttk.Frame(parent, style="Header.TFrame")
+        for color in ("#ff5f57", "#febc2e", "#28c840"):
+            dot = tk.Canvas(
+                frame,
+                width=12,
+                height=12,
+                highlightthickness=0,
+                bg=COLORS["surface"],
+            )
+            dot.create_oval(1, 1, 11, 11, fill=color, outline=color)
+            dot.pack(side=tk.LEFT, padx=(0, 6))
+        return frame
 
     def _path_row(
         self,
