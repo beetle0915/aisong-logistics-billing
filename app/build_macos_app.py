@@ -9,9 +9,10 @@ import stat
 import sys
 from pathlib import Path
 
+from express_app.version import APP_DISPLAY_NAME, APP_VERSION
 
-APP_NAME = "艾松物流计费系统"
-APP_VERSION = "7.0.2"
+
+APP_NAME = APP_DISPLAY_NAME
 EXECUTABLE_NAME = "ExpressFeeCalculator"
 BUNDLE_IDENTIFIER = "com.local.express-fee-calculator"
 DEFAULT_PYTHON = Path(

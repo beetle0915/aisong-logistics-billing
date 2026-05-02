@@ -8,8 +8,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+from express_app.version import APP_DISPLAY_NAME
 
-APP_NAME = "艾松物流计费系统"
+
+APP_NAME = APP_DISPLAY_NAME
 BUILD_APP_NAME = "AisongLogisticsBilling"
 ROOT_DIR = Path(__file__).resolve().parent
 ENTRY_FILE = ROOT_DIR / "windows_entry.py"

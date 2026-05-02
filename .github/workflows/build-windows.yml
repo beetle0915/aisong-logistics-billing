@@ -3,6 +3,8 @@ name: Build Windows EXE
 on:
   workflow_dispatch:
   push:
+    branches:
+      - "**"
     tags:
       - "v*"
 
@@ -35,6 +37,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r app/requirements-windows.txt
 
+      - name: Resolve app version
+        shell: pwsh
+        run: |
+          $version = python -c "import sys; sys.path.insert(0, 'app'); from express_app.version import APP_VERSION; print(APP_VERSION)"
+          echo "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Build executable
         shell: pwsh
         run: |
@@ -44,5 +52,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: aisong-logistics-billing-windows
+          name: aisong-logistics-billing-v${{ env.APP_VERSION }}-windows
           path: app/dist/windows/艾松物流计费系统/

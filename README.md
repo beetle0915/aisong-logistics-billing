@@ -14,6 +14,7 @@
 - 提供 Tkinter 桌面 GUI。
 - 支持 macOS `.app` 打包。
 - 支持 GitHub Actions 打包 Windows `.exe`。
+- GitHub Actions 会在每次 push 后自动打包 Windows 版本，artifact 名称带版本号。
 
 ## 目录
 
@@ -26,6 +27,9 @@ app/
   requirements-windows.txt  # Windows 打包依赖
 docs/
   PRD_艾松物流计费系统_V7_0_1_品牌升级.md
+  PRD_艾松物流计费系统_V7_0_2_打开目录修复.md
+  PRD_艾松物流计费系统_V7_0_4_德邦费用四舍五入.md
+  说明_当前快递费用计算逻辑.md
 .github/workflows/
   build-windows.yml
 ```
@@ -65,7 +69,7 @@ Actions -> Build Windows EXE -> Run workflow
 任务完成后下载 artifact：
 
 ```text
-aisong-logistics-billing-windows
+aisong-logistics-billing-v7.0.4-windows
 ```
 
 其中包含：
@@ -85,4 +89,3 @@ aisong-logistics-billing-windows
 客户每日快递费明细/
 *.xlsx
 ```
-

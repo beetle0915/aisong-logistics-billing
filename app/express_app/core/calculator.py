@@ -19,6 +19,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from ..version import OUTPUT_VERSION_SUFFIX
 from .models import (
     ExpressCompanyKeywordRule,
     ExpressFeeBatchJobConfig,
@@ -44,7 +46,6 @@ DEFAULT_SALES_FILE_CANDIDATES = [
 DEFAULT_PRICE_DIR = DEFAULT_ROOT / "快递报价表"
 DEFAULT_OUTPUT_DIR = DEFAULT_ROOT / "输出结果"
 DEFAULT_SPLIT_DIR = DEFAULT_ROOT / "客户每日快递费明细"
-OUTPUT_VERSION_SUFFIX = "v7_0_2"
 
 STANDARD_EXPRESS_COLUMN = "快递公司（标准版）"
 RAW_EXPRESS_COLUMN = "快递公司"
@@ -80,6 +81,7 @@ DEFAULT_EXPRESS_COMPANY_KEYWORD_RULES = [
 DEFAULT_LARGE_PIECE_COMPANIES = {"顺丰", "德邦"}
 DEFAULT_LARGE_PIECE_THRESHOLD_KG = 20
 DEFAULT_LARGE_PIECE_SUFFIX = "_大件"
+INTEGER_ROUNDING_EXPRESS_COMPANIES = {"德邦"}
 
 
 def build_default_rule_config() -> ExpressFeeRuleConfig:
@@ -412,10 +414,21 @@ def calculate_extra_weight(weight: float) -> int:
     return math.ceil(weight - 1)
 
 
-def calculate_fee(weight: float, price: Price, round_digits: int | None) -> tuple[float, int]:
+def round_half_up_to_integer(value: float) -> int:
+    return int(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def calculate_fee(
+    weight: float,
+    price: Price,
+    round_digits: int | None,
+    express_company: str,
+) -> tuple[float | int, int]:
     extra_weight = calculate_extra_weight(weight)
     fee = price.first_price + price.extra_price * extra_weight
-    if round_digits is not None:
+    if express_company in INTEGER_ROUNDING_EXPRESS_COMPANIES:
+        fee = round_half_up_to_integer(fee)
+    elif round_digits is not None:
         fee = round(fee, round_digits)
     return fee, extra_weight
 
@@ -542,7 +555,12 @@ def process_sales_workbook(
                     f"业务员={salesman}，计费模板={price_sheet_name}，省={province}"
                 )
 
-            fee, extra_weight = calculate_fee(weight, price, round_digits)
+            fee, extra_weight = calculate_fee(
+                weight,
+                price,
+                round_digits,
+                express_company,
+            )
 
             ws.cell(row=row, column=result_columns["快递费用"]).value = fee
             ws.cell(row=row, column=result_columns["首重费用"]).value = price.first_price

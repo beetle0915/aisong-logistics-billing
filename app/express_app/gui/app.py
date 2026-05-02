@@ -25,10 +25,11 @@ from express_app.core.models import (
 )
 from express_app.core import run_express_fee_batch_job
 from express_app.gui.config_store import GuiConfig, load_gui_config, save_gui_config
+from express_app.version import APP_DISPLAY_NAME, APP_VERSION_LABEL
 
 
-APP_TITLE = "艾松物流计费系统 V7.0.2"
-OUTPUT_VERSION_LABEL = "V7.0.2"
+APP_TITLE = f"{APP_DISPLAY_NAME} {APP_VERSION_LABEL}"
+OUTPUT_VERSION_LABEL = APP_VERSION_LABEL
 
 COLORS = {
     "background": "#F8FAFC",
@@ -410,7 +411,7 @@ class ExpressFeeApp(tk.Tk):
         header = ttk.Frame(root, padding=(18, 14), style="Header.TFrame")
         header.grid(row=0, column=0, sticky="ew", pady=(0, 14))
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, text="艾松物流计费系统", style="Title.TLabel").grid(
+        ttk.Label(header, text=APP_DISPLAY_NAME, style="Title.TLabel").grid(
             row=0,
             column=0,
             sticky="w",
