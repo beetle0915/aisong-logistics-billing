@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -2201,8 +2202,16 @@ class ExpressFeeApp(tk.Tk):
         error_lines.extend(result.history_errors)
         if error_lines:
             lines.extend(["", "需要处理的问题："])
-            lines.extend(error_lines)
+            lines.extend(self._format_customer_error_line(line) for line in error_lines)
         return "\n".join(lines)
+
+    def _format_customer_error_line(self, line: str) -> str:
+        home_path = str(Path.home())
+        sanitized = line.replace(home_path, "~")
+        sanitized = re.sub(r"(/private)?/var/folders/[^\s，。\n]+", "本地临时目录", sanitized)
+        sanitized = re.sub(r"/tmp/[^\s，。\n]+", "本地临时目录", sanitized)
+        sanitized = re.sub(r"/Users/[^\s，。\n]+", "本地目录", sanitized)
+        return sanitized
 
     def _append_log(self, text: str) -> None:
         self.log_text.configure(state=tk.NORMAL)
