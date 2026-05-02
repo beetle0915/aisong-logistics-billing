@@ -56,6 +56,12 @@ V8_2_1_AUTO_WORKFLOW_TRANSITIONS = {"on_start": "run", "on_done": "results"}
 V8_2_1_CONFIG_PAGE_SECTIONS = ("销售出库单", "当前系统设置", "生成选项")
 V8_2_1_CONFIG_SYSTEM_DIRECTORY_LABELS = ("报价表目录", "总结果目录", "客户明细目录")
 V8_3_BALANCE_TABLE_COLUMNS = ("客户", "累计消费", "累计收款", "当前余额", "最近日期", "状态", "文件路径")
+V8_3_1_BALANCE_TOP_ACTIONS = ()
+V8_3_1_BALANCE_FOOTER_ACTIONS = (
+    ("刷新数据", "Primary.TButton"),
+    ("打开客户目录", "Secondary.TButton"),
+    ("打开历史汇总表", "Secondary.TButton"),
+)
 OPTION_SELECTED_PREFIX = "✅"
 OPTION_UNSELECTED_PREFIX = "□"
 RULE_WINDOW_TITLE = "快递识别与大件规则"
@@ -435,7 +441,6 @@ class ExpressFeeApp(tk.Tk):
         self.balance_total_paid_var = tk.StringVar(value="¥0.00")
         self.balance_total_balance_var = tk.StringVar(value="¥0.00")
         self.balance_debtor_count_var = tk.StringVar(value="0 位")
-        self.balance_search_var = tk.StringVar()
         self.balance_records: list[CustomerBalanceRecord] = []
         self.balance_history_paths: dict[str, Path] = {}
         self.balance_customer_dirs: dict[str, Path] = {}
@@ -1169,7 +1174,7 @@ class ExpressFeeApp(tk.Tk):
 
     def _build_balance_page(self, content: ttk.Frame) -> None:
         content.columnconfigure(0, weight=1)
-        content.rowconfigure(2, weight=1)
+        content.rowconfigure(1, weight=1)
 
         summary_frame = ttk.Frame(content, style="Content.TFrame")
         summary_frame.grid(row=0, column=0, sticky="ew", pady=(0, 12))
@@ -1180,38 +1185,13 @@ class ExpressFeeApp(tk.Tk):
         self._metric(summary_frame, 2, "当前余额合计", self.balance_total_balance_var)
         self._metric(summary_frame, 3, "欠款客户", self.balance_debtor_count_var)
 
-        toolbar = ttk.Frame(content, style="Content.TFrame")
-        toolbar.grid(row=1, column=0, sticky="ew", pady=(0, 12))
-        toolbar.columnconfigure(1, weight=1)
-        ttk.Label(toolbar, text="搜索客户", style="Field.TLabel", background=COLORS["background"]).grid(
-            row=0,
-            column=0,
-            sticky="w",
-            padx=(0, 8),
-        )
-        search_entry = ttk.Entry(toolbar, textvariable=self.balance_search_var)
-        search_entry.grid(row=0, column=1, sticky="ew", padx=(0, 10))
-        search_entry.bind("<KeyRelease>", lambda _event: self._refresh_balance_table())
-        ttk.Button(
-            toolbar,
-            text="刷新数据",
-            command=self._load_account_balance_dashboard,
-            style="Primary.TButton",
-        ).grid(row=0, column=2, sticky="e", padx=(0, 8))
-        ttk.Button(
-            toolbar,
-            text="打开客户目录",
-            command=self._open_split_dir,
-            style="Secondary.TButton",
-        ).grid(row=0, column=3, sticky="e")
-
         table_frame = ttk.LabelFrame(
             content,
             text="客户余额表",
             padding=8,
             style="Panel.TLabelframe",
         )
-        table_frame.grid(row=2, column=0, sticky="nsew")
+        table_frame.grid(row=1, column=0, sticky="nsew")
         table_frame.rowconfigure(0, weight=1)
         table_frame.columnconfigure(0, weight=1)
 
@@ -1250,18 +1230,26 @@ class ExpressFeeApp(tk.Tk):
             background=COLORS["surface"],
             foreground=COLORS["muted"],
         ).pack(side=tk.LEFT)
+        action_buttons = ttk.Frame(actions, style="Surface.TFrame")
+        action_buttons.pack(side=tk.RIGHT)
         ttk.Button(
-            actions,
-            text="打开历史汇总表",
-            command=self._open_selected_balance_history,
-            style="Secondary.TButton",
-        ).pack(side=tk.RIGHT, padx=(8, 0))
+            action_buttons,
+            text="刷新数据",
+            command=self._load_account_balance_dashboard,
+            style="Primary.TButton",
+        ).pack(side=tk.LEFT)
         ttk.Button(
-            actions,
+            action_buttons,
             text="打开客户目录",
             command=self._open_selected_balance_customer_dir,
             style="Secondary.TButton",
-        ).pack(side=tk.RIGHT)
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(
+            action_buttons,
+            text="打开历史汇总表",
+            command=self._open_selected_balance_history,
+            style="Secondary.TButton",
+        ).pack(side=tk.LEFT, padx=(8, 0))
 
     def _show_page(self, nav_item: str) -> None:
         if nav_item not in V8_3_ENABLED_NAV_ITEMS:
@@ -1781,13 +1769,7 @@ class ExpressFeeApp(tk.Tk):
         for item_id in self.balance_tree.get_children():
             self.balance_tree.delete(item_id)
 
-        keyword = self.balance_search_var.get().strip()
-        records = [
-            record
-            for record in self.balance_records
-            if not keyword or keyword in record.customer
-        ]
-        for index, record in enumerate(records, start=1):
+        for index, record in enumerate(self.balance_records, start=1):
             item_id = f"balance-{index}"
             self.balance_history_paths[item_id] = record.history_file
             self.balance_customer_dirs[item_id] = record.customer_dir
