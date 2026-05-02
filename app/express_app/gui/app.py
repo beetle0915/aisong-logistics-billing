@@ -21,6 +21,8 @@ from express_app.core.calculator import (
     DEFAULT_PRICE_DIR,
     DEFAULT_SPLIT_DIR,
     build_default_rule_config,
+    load_price_template_workbook,
+    scan_price_template_catalog,
 )
 from express_app.core.models import (
     ExpressCompanyKeywordRule,
@@ -46,6 +48,7 @@ V8_1_MAIN_NAV_ITEMS = (
 V8_1_WORKFLOW_STEPS = ("配置", "运行", "结果")
 V8_2_ENABLED_NAV_ITEMS = ("费用计算", "系统设置")
 V8_3_ENABLED_NAV_ITEMS = ("费用计算", "账户余额", "系统设置")
+V8_4_ENABLED_NAV_ITEMS = ("费用计算", "账户余额", "报价预览", "系统设置")
 V8_2_SETTINGS_SECTIONS = ("目录配置", "精确映射", "关键词映射", "大件规则")
 V8_2_1_WORKFLOW_STEPS = (
     ("config", "配置"),
@@ -62,6 +65,8 @@ V8_3_1_BALANCE_FOOTER_ACTIONS = (
     ("打开客户目录", "Secondary.TButton"),
     ("打开历史汇总表", "Secondary.TButton"),
 )
+V8_4_PRICE_TEMPLATE_ACTIONS = ("同步快递报价表", "业务员", "搜索")
+V8_4_PRICE_TEMPLATE_COLUMNS = ("省份", "首重费用", "续重费用")
 OPTION_SELECTED_PREFIX = "✅"
 OPTION_UNSELECTED_PREFIX = "□"
 RULE_WINDOW_TITLE = "快递识别与大件规则"
@@ -434,6 +439,7 @@ class ExpressFeeApp(tk.Tk):
         self.content_container: ttk.Frame | None = None
         self.fee_page: ttk.Frame | None = None
         self.balance_page: ttk.Frame | None = None
+        self.price_preview_page: ttk.Frame | None = None
         self.settings_page: ttk.Frame | None = None
         self.balance_tree: ttk.Treeview | None = None
         self.balance_status_var = tk.StringVar(value="等待刷新")
@@ -444,6 +450,18 @@ class ExpressFeeApp(tk.Tk):
         self.balance_records: list[CustomerBalanceRecord] = []
         self.balance_history_paths: dict[str, Path] = {}
         self.balance_customer_dirs: dict[str, Path] = {}
+        self.price_template_customer_var = tk.StringVar()
+        self.price_template_status_var = tk.StringVar(value="点击同步快递报价表后选择业务员。")
+        self.price_template_summary_var = tk.StringVar(value="选择业务员后，客户报价会按快递公司分标签展示。")
+        self.price_template_catalog = None
+        self.price_template_workbook = None
+        self.price_template_customers: list[str] = []
+        self.price_template_selected_sheet = ""
+        self.price_template_sheet_tabs: list[str] = []
+        self.price_template_rows_by_sheet: dict[str, list[tuple[str, str, str]]] = {}
+        self.price_template_combo: ttk.Combobox | None = None
+        self.price_template_notebook: ttk.Notebook | None = None
+        self.price_template_trees: dict[str, ttk.Treeview] = {}
         self.settings_exact_text: tk.Text | None = None
         self.settings_keyword_text: tk.Text | None = None
         self.settings_large_companies_var = tk.StringVar()
@@ -677,7 +695,7 @@ class ExpressFeeApp(tk.Tk):
             font=("Helvetica Neue", 10, "bold"),
         ).pack(anchor="w", padx=8, pady=(0, 8))
         for index, item in enumerate(V8_1_MAIN_NAV_ITEMS):
-            enabled = item in V8_3_ENABLED_NAV_ITEMS
+            enabled = item in V8_4_ENABLED_NAV_ITEMS
             label = ttk.Label(
                 sidebar,
                 text=item if enabled else f"{item}  后续",
@@ -751,6 +769,12 @@ class ExpressFeeApp(tk.Tk):
         self.balance_page.columnconfigure(0, weight=1)
         self.balance_page.rowconfigure(1, weight=1)
         self._build_balance_page(self.balance_page)
+
+        self.price_preview_page = ttk.Frame(self.content_container, style="Content.TFrame")
+        self.price_preview_page.grid(row=0, column=0, sticky="nsew")
+        self.price_preview_page.columnconfigure(0, weight=1)
+        self.price_preview_page.rowconfigure(1, weight=1)
+        self._build_price_preview_page(self.price_preview_page)
 
         self.settings_page = ttk.Frame(self.content_container, style="Content.TFrame")
         self.settings_page.grid(row=0, column=0, sticky="nsew")
@@ -1251,8 +1275,78 @@ class ExpressFeeApp(tk.Tk):
             style="Secondary.TButton",
         ).pack(side=tk.LEFT, padx=(8, 0))
 
+    def _build_price_preview_page(self, content: ttk.Frame) -> None:
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(1, weight=1)
+
+        control_frame = ttk.LabelFrame(
+            content,
+            text="客户报价表",
+            padding=14,
+            style="Panel.TLabelframe",
+        )
+        control_frame.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        control_frame.columnconfigure(1, weight=1)
+        control_frame.columnconfigure(3, weight=1)
+        self._directory_summary_row(control_frame, 0, "报价表目录", self.price_dir_var)
+        ttk.Label(control_frame, text="业务员", style="Field.TLabel").grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=5,
+        )
+        self.price_template_combo = ttk.Combobox(
+            control_frame,
+            textvariable=self.price_template_customer_var,
+            values=self.price_template_customers,
+            state="readonly",
+        )
+        self.price_template_combo.grid(row=1, column=1, sticky="ew", padx=(10, 8), pady=5)
+        ttk.Button(
+            control_frame,
+            text="搜索",
+            command=self._search_price_template,
+            style="Primary.TButton",
+        ).grid(row=1, column=2, sticky="e", padx=(0, 8), pady=5)
+        ttk.Button(
+            control_frame,
+            text="同步快递报价表",
+            command=self._sync_price_templates,
+            style="Secondary.TButton",
+        ).grid(row=1, column=3, sticky="e", pady=5)
+
+        viewer_frame = ttk.LabelFrame(
+            content,
+            text="当前客户快递价格信息",
+            padding=14,
+            style="Panel.TLabelframe",
+        )
+        viewer_frame.grid(row=1, column=0, sticky="nsew")
+        viewer_frame.rowconfigure(1, weight=1)
+        viewer_frame.columnconfigure(0, weight=1)
+        ttk.Label(
+            viewer_frame,
+            textvariable=self.price_template_summary_var,
+            background=COLORS["surface"],
+            foreground=COLORS["muted"],
+            wraplength=760,
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.price_template_notebook = ttk.Notebook(viewer_frame)
+        self.price_template_notebook.grid(row=1, column=0, sticky="nsew")
+        self.price_template_notebook.bind(
+            "<<NotebookTabChanged>>",
+            lambda _event: self._on_price_template_tab_changed(),
+        )
+        ttk.Label(
+            viewer_frame,
+            textvariable=self.price_template_status_var,
+            background=COLORS["surface"],
+            foreground=COLORS["muted"],
+            wraplength=760,
+        ).grid(row=2, column=0, sticky="ew", pady=(8, 0))
+
     def _show_page(self, nav_item: str) -> None:
-        if nav_item not in V8_3_ENABLED_NAV_ITEMS:
+        if nav_item not in V8_4_ENABLED_NAV_ITEMS:
             return
         self.active_nav_var.set(nav_item)
         for item, label in self.nav_labels.items():
@@ -1267,6 +1361,11 @@ class ExpressFeeApp(tk.Tk):
             self.module_subtitle_var.set("从客户历史汇总表读取消费、收款和余额，快速识别欠款客户。")
             if self.balance_page is not None:
                 self.balance_page.tkraise()
+        elif nav_item == "报价预览":
+            self.module_title_var.set("报价预览")
+            self.module_subtitle_var.set("按客户查看报价表模板，快速核对各快递公司、各省份的发货价格。")
+            if self.price_preview_page is not None:
+                self.price_preview_page.tkraise()
         else:
             self.module_title_var.set("费用计算")
             self.module_subtitle_var.set("按配置、运行、结果三个步骤完成快递费用计算和客户明细生成。")
@@ -1472,6 +1571,148 @@ class ExpressFeeApp(tk.Tk):
             return str(self.sales_files[0])
         names = "；".join(path.name for path in self.sales_files)
         return f"已选择 {len(self.sales_files)} 个文件：{names}"
+
+    def _sync_price_templates(self) -> None:
+        try:
+            catalog = scan_price_template_catalog(Path(self.price_dir_var.get()).expanduser())
+        except (OSError, ValueError) as exc:
+            self.price_template_catalog = None
+            self.price_template_customers = []
+            self.price_template_customer_var.set("")
+            self._configure_price_template_combo()
+            self._clear_price_template_view()
+            self.price_template_status_var.set(str(exc))
+            return
+
+        self.price_template_catalog = catalog
+        self.price_template_customers = catalog.customer_names
+        if self.price_template_customers and self.price_template_customer_var.get() not in self.price_template_customers:
+            self.price_template_customer_var.set(self.price_template_customers[0])
+        self._configure_price_template_combo()
+        self.price_template_status_var.set(
+            f"同步完成：已识别 {len(self.price_template_customers)} 份客户报价表。"
+        )
+
+    def _search_price_template(self) -> None:
+        customer = self.price_template_customer_var.get().strip()
+        if not customer:
+            self.price_template_status_var.set("请先选择业务员。")
+            return
+        if self.price_template_catalog is None:
+            try:
+                self._sync_price_templates()
+            except (OSError, ValueError) as exc:
+                self.price_template_status_var.set(str(exc))
+                return
+        summary = self._find_price_template_summary(customer)
+        if summary is None:
+            self._clear_price_template_view()
+            self.price_template_status_var.set("找不到对应的报价表，请点击“同步快递报价表”后重试。")
+            return
+
+        try:
+            workbook = load_price_template_workbook(summary.price_file, customer=summary.customer)
+        except ValueError as exc:
+            self._clear_price_template_view()
+            self.price_template_status_var.set(str(exc))
+            return
+
+        self._apply_price_template_workbook(workbook)
+
+    def _find_price_template_summary(self, customer: str):
+        if self.price_template_catalog is None:
+            return None
+        for summary in self.price_template_catalog.summaries:
+            if summary.customer == customer:
+                return summary
+        return None
+
+    def _configure_price_template_combo(self) -> None:
+        combo = self.__dict__.get("price_template_combo")
+        if combo is not None:
+            combo.configure(values=self.price_template_customers)
+
+    def _clear_price_template_view(self) -> None:
+        self.price_template_workbook = None
+        self.price_template_sheet_tabs = []
+        self.price_template_rows_by_sheet = {}
+        self.price_template_selected_sheet = ""
+        self.price_template_summary_var.set("选择业务员后，客户报价会按快递公司分标签展示。")
+        notebook = self.__dict__.get("price_template_notebook")
+        if notebook is not None:
+            for tab_id in notebook.tabs():
+                notebook.forget(tab_id)
+        self.price_template_trees.clear()
+
+    def _apply_price_template_workbook(self, workbook) -> None:
+        self._clear_price_template_view()
+        self.price_template_workbook = workbook
+        self.price_template_sheet_tabs = [sheet.sheet_name for sheet in workbook.sheets]
+        self.price_template_rows_by_sheet = {
+            sheet.sheet_name: [
+                (
+                    row.province,
+                    self._format_template_price(row.first_price),
+                    self._format_template_price(row.extra_price),
+                )
+                for row in sheet.rows
+            ]
+            for sheet in workbook.sheets
+        }
+        total_rows = sum(len(rows) for rows in self.price_template_rows_by_sheet.values())
+        self.price_template_summary_var.set(
+            f"客户：{workbook.customer}    报价文件：{workbook.price_file.name}    "
+            f"{len(workbook.sheets)} 个快递公司    省份记录：{total_rows} 条"
+        )
+
+        notebook = self.__dict__.get("price_template_notebook")
+        if notebook is not None:
+            for sheet in workbook.sheets:
+                tab_frame = ttk.Frame(notebook, style="Surface.TFrame")
+                tab_frame.rowconfigure(0, weight=1)
+                tab_frame.columnconfigure(0, weight=1)
+                tree = ttk.Treeview(
+                    tab_frame,
+                    columns=("province", "first_price", "extra_price"),
+                    show="headings",
+                    height=12,
+                )
+                for column_id, label in zip(tree["columns"], V8_4_PRICE_TEMPLATE_COLUMNS):
+                    tree.heading(column_id, text=label)
+                tree.column("province", width=160, minwidth=120, stretch=True)
+                tree.column("first_price", width=120, minwidth=90, stretch=False)
+                tree.column("extra_price", width=120, minwidth=90, stretch=False)
+                tree.grid(row=0, column=0, sticky="nsew")
+                scrollbar = ttk.Scrollbar(tab_frame, orient=tk.VERTICAL, command=tree.yview)
+                scrollbar.grid(row=0, column=1, sticky="ns")
+                tree.configure(yscrollcommand=scrollbar.set)
+                for values in self.price_template_rows_by_sheet[sheet.sheet_name]:
+                    tree.insert("", tk.END, values=values)
+                self.price_template_trees[sheet.sheet_name] = tree
+                notebook.add(tab_frame, text=sheet.sheet_name)
+
+        if self.price_template_sheet_tabs:
+            self.price_template_selected_sheet = self.price_template_sheet_tabs[0]
+            self.price_template_status_var.set(
+                f"已加载 {workbook.customer} 报价：{len(workbook.sheets)} 个快递公司，{total_rows} 条省份价格。"
+            )
+        else:
+            self.price_template_status_var.set(f"{workbook.customer} 的报价表没有可用 sheet。")
+
+    def _on_price_template_tab_changed(self) -> None:
+        if self.price_template_notebook is None or not self.price_template_notebook.tabs():
+            return
+        sheet_name = self.price_template_notebook.tab(self.price_template_notebook.select(), "text")
+        self.price_template_selected_sheet = sheet_name
+        customer = self.price_template_workbook.customer if self.price_template_workbook else ""
+        row_count = len(self.price_template_rows_by_sheet.get(sheet_name, []))
+        self.price_template_status_var.set(f"当前查看：{customer} / {sheet_name}，{row_count} 条省份价格。")
+
+    def _format_template_price(self, value: object) -> str:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return self._format_currency(float(value))
+        text = "" if value is None else str(value)
+        return text
 
     def _start_job(self) -> None:
         if self._worker and self._worker.is_alive():

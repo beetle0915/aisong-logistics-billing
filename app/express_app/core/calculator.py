@@ -75,6 +75,11 @@ PRICE_COLUMNS = {
     "first_price": "首重费用",
     "extra_price": "续重费用",
 }
+PRICE_TEMPLATE_REQUIRED_COLUMNS = [
+    PRICE_COLUMNS["province"],
+    PRICE_COLUMNS["first_price"],
+    PRICE_COLUMNS["extra_price"],
+]
 DEFAULT_EXPRESS_COMPANY_EXACT_MAP = {
     "顺丰速运新3": "顺丰",
     "顺丰速运开": "顺丰",
@@ -142,6 +147,57 @@ def normalize_rule_config(rule_config: ExpressFeeRuleConfig | None) -> ExpressFe
 class Price:
     first_price: float
     extra_price: float
+
+
+@dataclass(frozen=True)
+class PriceTemplateRow:
+    row_number: int
+    province: str
+    first_price: Any
+    extra_price: Any
+
+
+@dataclass(frozen=True)
+class PriceTemplateSheet:
+    sheet_name: str
+    headers: list[str]
+    rows: list[PriceTemplateRow]
+    errors: list[str]
+
+    @property
+    def missing_columns(self) -> list[str]:
+        return [column for column in PRICE_TEMPLATE_REQUIRED_COLUMNS if column not in self.headers]
+
+
+@dataclass(frozen=True)
+class PriceTemplateWorkbook:
+    customer: str
+    price_file: Path
+    sheets: list[PriceTemplateSheet]
+    errors: list[str]
+
+
+@dataclass(frozen=True)
+class PriceTemplateSummary:
+    customer: str
+    price_file: Path
+    sheet_names: list[str]
+    status: str
+    errors: list[str]
+
+    @property
+    def sheet_count(self) -> int:
+        return len(self.sheet_names)
+
+
+@dataclass(frozen=True)
+class PriceTemplateCatalog:
+    summaries: list[PriceTemplateSummary]
+    errors: list[str]
+
+    @property
+    def customer_names(self) -> list[str]:
+        return [summary.customer for summary in self.summaries]
 
 
 @dataclass
@@ -554,6 +610,197 @@ def load_price_tables(price_dir: Path) -> dict[tuple[str, str, str], Price]:
                 price_map[key] = Price(first_price=first_price, extra_price=extra_price)
 
     return price_map
+
+
+def find_price_files_by_salesman(price_dir: Path) -> dict[str, Path]:
+    if not price_dir.exists():
+        raise FileNotFoundError(
+            format_error_block(
+                "报价表错误",
+                f"报价目录不存在：{price_dir}",
+                "请重新选择报价表目录，确认目录存在且当前用户有读取权限。",
+                stage="读取报价表",
+                location=str(price_dir),
+            )
+        )
+    price_files = sorted(
+        path
+        for path in price_dir.glob("*.xlsx")
+        if not path.name.startswith("~$") and path.is_file()
+    )
+    if not price_files:
+        raise FileNotFoundError(
+            format_error_block(
+                "报价表错误",
+                "目录中没有找到可用的 .xlsx 报价文件。",
+                "请重新选择报价表目录，确认选择的是包含业务员报价 Excel 的目录。",
+                stage="读取报价表",
+                location=str(price_dir),
+                context={"报价目录": price_dir},
+            )
+        )
+    return {parse_salesman_from_filename(path): path for path in price_files}
+
+
+def scan_price_template_catalog(price_dir: Path) -> PriceTemplateCatalog:
+    if not price_dir.exists():
+        raise FileNotFoundError(
+            format_error_block(
+                "报价表错误",
+                f"报价目录不存在：{price_dir}",
+                "请重新选择报价表目录，确认目录存在且当前用户有读取权限。",
+                stage="同步报价目录",
+                location=str(price_dir),
+            )
+        )
+
+    price_files = sorted(
+        path
+        for path in price_dir.glob("*.xlsx")
+        if not path.name.startswith("~$") and path.is_file()
+    )
+    if not price_files:
+        raise FileNotFoundError(
+            format_error_block(
+                "报价表错误",
+                "目录中没有找到可用的 .xlsx 报价文件。",
+                "请确认选择的是包含客户报价 Excel 的目录。",
+                stage="同步报价目录",
+                location=str(price_dir),
+                context={"报价目录": price_dir},
+            )
+        )
+
+    summaries: list[PriceTemplateSummary] = []
+    errors: list[str] = []
+    seen_customers: dict[str, Path] = {}
+    for price_file in price_files:
+        customer = parse_salesman_from_filename(price_file)
+        if not customer:
+            errors.append(f"跳过报价文件：{price_file.name}，无法从文件名解析客户名。")
+            continue
+        if customer in seen_customers:
+            raise ValueError(
+                format_error_block(
+                    "报价表错误",
+                    f"客户「{customer}」存在多个报价文件。",
+                    "请保留一个正式报价文件，或调整文件名避免重复客户名。",
+                    stage="同步报价目录",
+                    location=str(price_dir),
+                    context={
+                        "重复文件": f"{seen_customers[customer].name}、{price_file.name}",
+                    },
+                )
+            )
+        seen_customers[customer] = price_file
+
+        try:
+            workbook = openpyxl.load_workbook(price_file, data_only=True, read_only=True)
+            sheet_names = list(workbook.sheetnames)
+        except OSError as exc:
+            sheet_names = []
+            message = format_error_block(
+                "报价表错误",
+                "报价文件无法打开。",
+                "请确认文件是有效的 .xlsx，且没有被 Excel 独占锁定。",
+                stage="同步报价目录",
+                location=str(price_file),
+                system_error=exc,
+            )
+            errors.append(message)
+        status = "正常" if sheet_names else "读取失败"
+        summaries.append(
+            PriceTemplateSummary(
+                customer=customer,
+                price_file=price_file,
+                sheet_names=sheet_names,
+                status=status,
+                errors=[] if status == "正常" else [errors[-1]],
+            )
+        )
+
+    summaries.sort(key=lambda item: item.customer)
+    if not summaries:
+        raise FileNotFoundError(
+            format_error_block(
+                "报价表错误",
+                "目录中没有找到可用的客户报价文件。",
+                "请确认报价文件名类似「客户A-快递报价.xlsx」。",
+                stage="同步报价目录",
+                location=str(price_dir),
+            )
+        )
+    return PriceTemplateCatalog(summaries=summaries, errors=errors)
+
+
+def load_price_template_workbook(
+    price_file: Path,
+    *,
+    customer: str | None = None,
+) -> PriceTemplateWorkbook:
+    resolved_customer = customer or parse_salesman_from_filename(price_file)
+    try:
+        workbook = openpyxl.load_workbook(price_file, data_only=True, read_only=True)
+    except OSError as exc:
+        raise ValueError(
+            format_error_block(
+                "报价表错误",
+                "报价文件无法打开。",
+                "请确认文件是有效的 .xlsx，且没有被 Excel 独占锁定。",
+                stage="读取客户报价",
+                location=str(price_file),
+                system_error=exc,
+            )
+        ) from exc
+
+    sheets = [load_price_template_sheet(ws) for ws in workbook.worksheets]
+    return PriceTemplateWorkbook(
+        customer=resolved_customer,
+        price_file=price_file,
+        sheets=sheets,
+        errors=[error for sheet in sheets for error in sheet.errors],
+    )
+
+
+def load_price_template_sheet(
+    ws: openpyxl.worksheet.worksheet.Worksheet,
+) -> PriceTemplateSheet:
+    headers = list(find_header_indexes(ws))
+    missing = [column for column in PRICE_TEMPLATE_REQUIRED_COLUMNS if column not in headers]
+    if missing:
+        return PriceTemplateSheet(
+            sheet_name=normalize_text(ws.title),
+            headers=headers,
+            rows=[],
+            errors=[f"{ws.title} 缺少必要列：{'、'.join(missing)}。请检查报价表表头。"],
+        )
+
+    header_indexes = find_header_indexes(ws)
+    province_col = header_indexes[PRICE_COLUMNS["province"]]
+    first_col = header_indexes[PRICE_COLUMNS["first_price"]]
+    extra_col = header_indexes[PRICE_COLUMNS["extra_price"]]
+    rows: list[PriceTemplateRow] = []
+    for row_number in range(2, ws.max_row + 1):
+        province = normalize_text(ws.cell(row=row_number, column=province_col).value)
+        first_price = ws.cell(row=row_number, column=first_col).value
+        extra_price = ws.cell(row=row_number, column=extra_col).value
+        if not province and first_price in (None, "") and extra_price in (None, ""):
+            continue
+        rows.append(
+            PriceTemplateRow(
+                row_number=row_number,
+                province=province,
+                first_price=first_price,
+                extra_price=extra_price,
+            )
+        )
+
+    return PriceTemplateSheet(
+        sheet_name=normalize_text(ws.title),
+        headers=headers,
+        rows=rows,
+        errors=[],
+    )
 
 
 def calculate_extra_weight(weight: float) -> int:
