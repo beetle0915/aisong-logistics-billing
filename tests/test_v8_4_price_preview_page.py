@@ -37,6 +37,17 @@ class FakeWidget:
         self.raised = True
 
 
+class FakeCombobox:
+    def __init__(self) -> None:
+        self.configured_values: list[str] = []
+        self.options: dict[str, object] = {}
+
+    def configure(self, **kwargs: object) -> None:
+        self.options.update(kwargs)
+        if "values" in kwargs:
+            self.configured_values = list(kwargs["values"])  # type: ignore[arg-type]
+
+
 class V84PricePreviewPageTest(unittest.TestCase):
     def _write_price_file(self, price_dir: Path, name: str = "客户A-快递报价.xlsx") -> None:
         workbook = openpyxl.Workbook()
@@ -80,6 +91,12 @@ class V84PricePreviewPageTest(unittest.TestCase):
         self.assertNotIn("重量", gui_app.V8_4_PRICE_TEMPLATE_ACTIONS)
         self.assertNotIn("最终费用", gui_app.V8_4_PRICE_TEMPLATE_COLUMNS)
 
+    def test_price_preview_uses_isolated_ui_styles(self) -> None:
+        self.assertEqual(gui_app.PRICE_PREVIEW_COMBO_STYLE, "PricePreview.TCombobox")
+        self.assertEqual(gui_app.PRICE_PREVIEW_NOTEBOOK_STYLE, "PricePreview.TNotebook")
+        self.assertEqual(gui_app.PRICE_PREVIEW_TREE_STYLE, "PricePreview.Treeview")
+        self.assertEqual(gui_app.PRICE_PREVIEW_SCROLLBAR_STYLE, "PricePreview.Vertical.TScrollbar")
+
     def test_sync_price_templates_populates_customer_dropdown_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_text:
             price_dir = Path(temp_dir_text)
@@ -92,6 +109,15 @@ class V84PricePreviewPageTest(unittest.TestCase):
             self.assertEqual(app.price_template_customers, ["客户A", "客户B"])
             self.assertEqual(app.price_template_customer_var.get(), "客户A")
             self.assertIn("已识别 2 份客户报价表", app.price_template_status_var.get())
+
+    def test_configure_price_template_combo_updates_values_without_ttk_assumptions(self) -> None:
+        app = ExpressFeeApp.__new__(ExpressFeeApp)
+        app.price_template_customers = ["客户A", "客户B"]
+        app.price_template_combo = FakeCombobox()
+
+        app._configure_price_template_combo()
+
+        self.assertEqual(app.price_template_combo.configured_values, ["客户A", "客户B"])
 
     def test_search_price_template_loads_sheet_tabs_and_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_text:

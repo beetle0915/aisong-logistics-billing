@@ -21,10 +21,10 @@ class V81GuiNavigationCopyTest(unittest.TestCase):
                 "费用计算",
                 "账户余额",
                 "报价预览",
-                "客户档案",
                 "系统设置",
             ],
         )
+        self.assertNotIn("客户档案", V8_1_MAIN_NAV_ITEMS)
 
     def test_workflow_steps_expose_v8_1_fee_calculation_flow(self) -> None:
         self.assertEqual(

@@ -43,7 +43,6 @@ V8_1_MAIN_NAV_ITEMS = (
     "费用计算",
     "账户余额",
     "报价预览",
-    "客户档案",
     "系统设置",
 )
 V8_1_WORKFLOW_STEPS = ("配置", "运行", "结果")
@@ -68,6 +67,10 @@ V8_3_1_BALANCE_FOOTER_ACTIONS = (
 )
 V8_4_PRICE_TEMPLATE_ACTIONS = ("同步快递报价表", "业务员", "搜索")
 V8_4_PRICE_TEMPLATE_COLUMNS = ("省份", "首重费用", "续重费用")
+PRICE_PREVIEW_COMBO_STYLE = "PricePreview.TCombobox"
+PRICE_PREVIEW_NOTEBOOK_STYLE = "PricePreview.TNotebook"
+PRICE_PREVIEW_TREE_STYLE = "PricePreview.Treeview"
+PRICE_PREVIEW_SCROLLBAR_STYLE = "PricePreview.Vertical.TScrollbar"
 OPTION_SELECTED_PREFIX = "✅"
 OPTION_UNSELECTED_PREFIX = "□"
 RULE_WINDOW_TITLE = "快递识别与大件规则"
@@ -643,6 +646,85 @@ class ExpressFeeApp(tk.Tk):
             "Treeview",
             background=[("selected", COLORS["primary"])],
             foreground=[("selected", "#FFFFFF")],
+        )
+        style.configure(
+            PRICE_PREVIEW_COMBO_STYLE,
+            fieldbackground="#FFFFFF",
+            background=COLORS["surface_alt"],
+            foreground=COLORS["text"],
+            arrowcolor=COLORS["primary"],
+            bordercolor=COLORS["accent_light"],
+            lightcolor=COLORS["accent_light"],
+            darkcolor=COLORS["border"],
+            padding=(10, 7),
+            font=(font_family, 11),
+        )
+        style.map(
+            PRICE_PREVIEW_COMBO_STYLE,
+            fieldbackground=[("readonly", "#FFFFFF"), ("focus", "#FFFFFF")],
+            selectbackground=[("readonly", COLORS["accent_bg"])],
+            selectforeground=[("readonly", COLORS["primary_dark"])],
+            bordercolor=[("focus", COLORS["primary"]), ("hover", COLORS["accent_light"])],
+        )
+        style.configure(
+            PRICE_PREVIEW_NOTEBOOK_STYLE,
+            background=COLORS["surface"],
+            borderwidth=0,
+            tabmargins=(0, 0, 0, 8),
+        )
+        style.configure(
+            f"{PRICE_PREVIEW_NOTEBOOK_STYLE}.Tab",
+            background=COLORS["surface_alt"],
+            foreground=COLORS["muted"],
+            padding=(16, 8),
+            font=(font_family, 11, "bold"),
+        )
+        style.map(
+            f"{PRICE_PREVIEW_NOTEBOOK_STYLE}.Tab",
+            background=[
+                ("selected", COLORS["primary"]),
+                ("active", COLORS["accent_bg"]),
+            ],
+            foreground=[
+                ("selected", "#FFFFFF"),
+                ("active", COLORS["primary_dark"]),
+            ],
+        )
+        style.configure(
+            PRICE_PREVIEW_TREE_STYLE,
+            background="#FFFFFF",
+            fieldbackground="#FFFFFF",
+            foreground=COLORS["text"],
+            rowheight=34,
+            bordercolor=COLORS["border"],
+            font=(font_family, 11),
+        )
+        style.configure(
+            f"{PRICE_PREVIEW_TREE_STYLE}.Heading",
+            background=COLORS["accent_bg"],
+            foreground=COLORS["primary_dark"],
+            font=(font_family, 11, "bold"),
+            relief=tk.FLAT,
+            padding=(10, 8),
+        )
+        style.map(
+            PRICE_PREVIEW_TREE_STYLE,
+            background=[("selected", COLORS["primary"])],
+            foreground=[("selected", "#FFFFFF")],
+        )
+        style.configure(
+            PRICE_PREVIEW_SCROLLBAR_STYLE,
+            background=COLORS["accent_bg"],
+            troughcolor=COLORS["surface_alt"],
+            bordercolor=COLORS["surface"],
+            arrowcolor=COLORS["primary"],
+            relief=tk.FLAT,
+            width=14,
+        )
+        style.map(
+            PRICE_PREVIEW_SCROLLBAR_STYLE,
+            background=[("active", COLORS["accent_light"])],
+            arrowcolor=[("active", "#FFFFFF")],
         )
 
     def _build_ui(self) -> None:
@@ -1301,8 +1383,9 @@ class ExpressFeeApp(tk.Tk):
             textvariable=self.price_template_customer_var,
             values=self.price_template_customers,
             state="readonly",
+            style=PRICE_PREVIEW_COMBO_STYLE,
         )
-        self.price_template_combo.grid(row=1, column=1, sticky="ew", padx=(10, 8), pady=5)
+        self.price_template_combo.grid(row=1, column=1, sticky="ew", padx=(10, 8), pady=6)
         ttk.Button(
             control_frame,
             text="搜索",
@@ -1332,7 +1415,10 @@ class ExpressFeeApp(tk.Tk):
             foreground=COLORS["muted"],
             wraplength=760,
         ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        self.price_template_notebook = ttk.Notebook(viewer_frame)
+        self.price_template_notebook = ttk.Notebook(
+            viewer_frame,
+            style=PRICE_PREVIEW_NOTEBOOK_STYLE,
+        )
         self.price_template_notebook.grid(row=1, column=0, sticky="nsew")
         self.price_template_notebook.bind(
             "<<NotebookTabChanged>>",
@@ -1677,6 +1763,7 @@ class ExpressFeeApp(tk.Tk):
                     columns=("province", "first_price", "extra_price"),
                     show="headings",
                     height=12,
+                    style=PRICE_PREVIEW_TREE_STYLE,
                 )
                 for column_id, label in zip(tree["columns"], V8_4_PRICE_TEMPLATE_COLUMNS):
                     tree.heading(column_id, text=label)
@@ -1684,8 +1771,13 @@ class ExpressFeeApp(tk.Tk):
                 tree.column("first_price", width=120, minwidth=90, stretch=False)
                 tree.column("extra_price", width=120, minwidth=90, stretch=False)
                 tree.grid(row=0, column=0, sticky="nsew")
-                scrollbar = ttk.Scrollbar(tab_frame, orient=tk.VERTICAL, command=tree.yview)
-                scrollbar.grid(row=0, column=1, sticky="ns")
+                scrollbar = ttk.Scrollbar(
+                    tab_frame,
+                    orient=tk.VERTICAL,
+                    command=tree.yview,
+                    style=PRICE_PREVIEW_SCROLLBAR_STYLE,
+                )
+                scrollbar.grid(row=0, column=1, sticky="ns", padx=(8, 0))
                 tree.configure(yscrollcommand=scrollbar.set)
                 for values in self.price_template_rows_by_sheet[sheet.sheet_name]:
                     tree.insert("", tk.END, values=values)
