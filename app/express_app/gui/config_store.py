@@ -16,11 +16,16 @@ from express_app.core.calculator import (
     detect_default_sales_file,
 )
 from express_app.core.models import ExpressCompanyKeywordRule, ExpressFeeRuleConfig
+from express_app.version import APP_DISPLAY_NAME
 
 
 CONFIG_VERSION = 1
 APP_DIR = Path(__file__).resolve().parents[2]
-LEGACY_CONFIG_DIR = Path.home() / "Library/Application Support/快递费计算工具"
+CONFIG_BASE_DIR = Path.home() / "Library/Application Support"
+LEGACY_CONFIG_DIRS = [
+    CONFIG_BASE_DIR / "艾松物流计费系统",
+    CONFIG_BASE_DIR / "快递费计算工具",
+]
 
 
 def resolve_default_config_file() -> Path:
@@ -34,7 +39,11 @@ DEFAULT_CONFIG_FILE = resolve_default_config_file()
 
 
 def _legacy_config_file() -> Path:
-    return LEGACY_CONFIG_DIR / "config.json"
+    for legacy_dir in LEGACY_CONFIG_DIRS:
+        legacy_config_file = legacy_dir / "config.json"
+        if legacy_config_file.exists():
+            return legacy_config_file
+    return LEGACY_CONFIG_DIRS[-1] / "config.json"
 
 
 @dataclass(frozen=True)
@@ -190,7 +199,7 @@ def load_gui_config(config_file: Path = DEFAULT_CONFIG_FILE) -> GuiConfig:
 
     default = default_gui_config()
     if not config_file.exists():
-        if config_file.parent.name == "艾松物流计费系统":
+        if config_file.parent.name == APP_DISPLAY_NAME:
             legacy_config_file = _legacy_config_file()
             if legacy_config_file.exists():
                 config_file = legacy_config_file

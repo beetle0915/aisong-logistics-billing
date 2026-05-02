@@ -22,6 +22,10 @@ config.json
 *.log
 *启动日志.log
 
+# Intermediate files generated while creating app icons.
+app/assets/app_icon.iconset/
+app/assets/app_icon_master.png
+
 # Business data and generated workbooks should stay local.
 原始数据表/
 快递报价表/
@@ -29,4 +33,3 @@ config.json
 客户每日快递费明细/
 *.xlsx
 ~$*.xlsx
-

@@ -15,6 +15,9 @@ from express_app.version import APP_DISPLAY_NAME, APP_VERSION
 APP_NAME = APP_DISPLAY_NAME
 EXECUTABLE_NAME = "ExpressFeeCalculator"
 BUNDLE_IDENTIFIER = "com.local.express-fee-calculator"
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+APP_ICON_FILE = "app_icon.icns"
+APP_ICON_PATH = ASSETS_DIR / APP_ICON_FILE
 DEFAULT_PYTHON = Path(
     "/Users/beetle/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3"
 )
@@ -31,6 +34,7 @@ def build_app_bundle(app_dir: Path) -> Path:
     macos_dir.mkdir(parents=True, exist_ok=True)
     resources_dir.mkdir(parents=True, exist_ok=True)
     copy_app_source(app_dir, resources_dir / "app")
+    copy_app_icon(resources_dir)
 
     write_info_plist(contents_dir / "Info.plist")
     write_pkg_info(contents_dir / "PkgInfo")
@@ -49,12 +53,19 @@ def copy_app_source(app_dir: Path, bundle_app_dir: Path) -> None:
     )
 
 
+def copy_app_icon(resources_dir: Path) -> None:
+    if not APP_ICON_PATH.exists():
+        raise FileNotFoundError(f"App icon not found: {APP_ICON_PATH}")
+    shutil.copy2(APP_ICON_PATH, resources_dir / APP_ICON_FILE)
+
+
 def write_info_plist(path: Path) -> None:
     info = {
         "CFBundleName": APP_NAME,
         "CFBundleDisplayName": APP_NAME,
         "CFBundleExecutable": EXECUTABLE_NAME,
         "CFBundleIdentifier": BUNDLE_IDENTIFIER,
+        "CFBundleIconFile": APP_ICON_FILE,
         "CFBundleInfoDictionaryVersion": "6.0",
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": APP_VERSION,
@@ -78,8 +89,8 @@ set -e
 CONTENTS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUNDLE_DIR="$(cd "$CONTENTS_DIR/.." && pwd)"
 APP_DIR="$CONTENTS_DIR/Resources/app"
-CONFIG_DIR="$HOME/Library/Application Support/艾松物流计费系统"
-LOG_DIR="$HOME/Library/Logs/艾松物流计费系统"
+CONFIG_DIR="$HOME/Library/Application Support/{APP_NAME}"
+LOG_DIR="$HOME/Library/Logs/{APP_NAME}"
 LOG_FILE="$LOG_DIR/启动日志.log"
 PYTHON_EXECUTABLE="${{EXPRESS_APP_PYTHON:-{python_executable}}}"
 

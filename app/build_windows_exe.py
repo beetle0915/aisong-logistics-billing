@@ -14,6 +14,8 @@ from express_app.version import APP_DISPLAY_NAME
 APP_NAME = APP_DISPLAY_NAME
 BUILD_APP_NAME = "AisongLogisticsBilling"
 ROOT_DIR = Path(__file__).resolve().parent
+ASSETS_DIR = ROOT_DIR / "assets"
+APP_ICON_PATH = ASSETS_DIR / "app_icon.ico"
 ENTRY_FILE = ROOT_DIR / "windows_entry.py"
 BUILD_DIR = ROOT_DIR / "build" / "windows"
 DIST_DIR = ROOT_DIR / "dist" / "windows"
@@ -63,6 +65,8 @@ def build_exe() -> Path:
             "--windowed",
             "--name",
             BUILD_APP_NAME,
+            "--icon",
+            str(APP_ICON_PATH),
             "--distpath",
             str(DIST_DIR),
             "--workpath",

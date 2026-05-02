@@ -52,5 +52,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: aisong-logistics-billing-v${{ env.APP_VERSION }}-windows
-          path: app/dist/windows/艾松物流计费系统/
+          name: aisong-freight-manager-v${{ env.APP_VERSION }}-windows
+          path: app/dist/windows/艾松运费管家/
