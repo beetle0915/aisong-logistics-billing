@@ -20,6 +20,7 @@ from express_app.core.calculator import (  # noqa: E402
 )
 
 
+HISTORY_DETAIL_SHEET = "快递明细"
 PAYMENT_SHEET = "收款记录"
 LEGACY_HISTORY_FILE = "客户快递费历史汇总.xlsx"
 
@@ -42,12 +43,14 @@ class CustomerHistoryWorkbookTest(unittest.TestCase):
         customer: str,
         shipping_date: date,
         fee: float,
+        outbound_no: str = "CK001",
+        weight: float = 2.5,
     ) -> None:
         workbook = openpyxl.Workbook()
         ws = workbook.active
         ws.title = "快递明细"
-        ws.append(["出库日期", "业务员", "重量", "快递费用", "快递公司（标准版）"])
-        ws.append([shipping_date, customer, 2.5, fee, "顺丰"])
+        ws.append(["出库单号", "出库日期", "业务员", "重量", "快递费用", "快递公司（标准版）"])
+        ws.append([outbound_no, shipping_date, customer, weight, fee, "顺丰"])
         output_path = customer_dir / f"{shipping_date:%Y-%m-%d}_{customer}_快递费明细.xlsx"
         workbook.save(output_path)
 
@@ -76,7 +79,7 @@ class CustomerHistoryWorkbookTest(unittest.TestCase):
                 customer_dir / customer_history_summary_file_name("客户A"),
                 data_only=False,
             )
-            self.assertEqual(workbook.sheetnames, [CUSTOMER_HISTORY_SHEET, PAYMENT_SHEET])
+            self.assertEqual(workbook.sheetnames, [CUSTOMER_HISTORY_SHEET, HISTORY_DETAIL_SHEET, PAYMENT_SHEET])
 
             history_sheet = workbook[CUSTOMER_HISTORY_SHEET]
             self.assertEqual(
@@ -115,6 +118,20 @@ class CustomerHistoryWorkbookTest(unittest.TestCase):
             )
             self.assertEqual(history_sheet["H2"].value, "=G2-E2")
 
+            detail_sheet = workbook[HISTORY_DETAIL_SHEET]
+            self.assertEqual(
+                [detail_sheet.cell(row=1, column=column).value for column in range(1, 7)],
+                ["出库单号", "出库日期", "业务员", "重量", "快递费用", "快递公司（标准版）"],
+            )
+            self.assertEqual(detail_sheet["A2"].value, "CK001")
+            self.assertEqual(detail_sheet["E2"].value, 120.5)
+            self.assertEqual(detail_sheet["G1"].value, "历史记录Key")
+            self.assertTrue(detail_sheet.column_dimensions["G"].hidden)
+            self.assertEqual(detail_sheet["G2"].value, "CK001|2026-04-02 00:00:00")
+            self.assertEqual(detail_sheet["I1"].value, "最后更新时间")
+            self.assert_cell_has_thin_border(detail_sheet["A1"])
+            self.assert_cell_has_thin_border(detail_sheet["I2"])
+
             payment_sheet = workbook[PAYMENT_SHEET]
             self.assertEqual(
                 [payment_sheet.cell(row=1, column=column).value for column in range(1, 6)],
@@ -148,6 +165,52 @@ class CustomerHistoryWorkbookTest(unittest.TestCase):
             self.assertEqual(payment_sheet["C2"].value, "小李")
             self.assertEqual(payment_sheet["D2"].value, 5000)
             self.assert_cell_date(payment_sheet["E2"].value, date(2026, 4, 2))
+
+    def test_history_detail_upserts_by_outbound_number_and_shipping_time(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            customer_dir = Path(temp_dir) / "客户A"
+            customer_dir.mkdir()
+            self._write_daily_detail(
+                customer_dir,
+                "客户A",
+                date(2026, 4, 2),
+                120.5,
+                outbound_no="CK001",
+                weight=2.5,
+            )
+            build_customer_history_summary(customer_dir, build_default_rule_config())
+
+            self._write_daily_detail(
+                customer_dir,
+                "客户A",
+                date(2026, 4, 2),
+                130.0,
+                outbound_no="CK001",
+                weight=3.0,
+            )
+            self._write_daily_detail(
+                customer_dir,
+                "客户A",
+                date(2026, 4, 3),
+                88.0,
+                outbound_no="CK002",
+                weight=1.5,
+            )
+            build_customer_history_summary(customer_dir, build_default_rule_config())
+
+            refreshed = openpyxl.load_workbook(
+                customer_dir / customer_history_summary_file_name("客户A"),
+                data_only=False,
+            )
+            detail_sheet = refreshed[HISTORY_DETAIL_SHEET]
+            self.assertEqual(detail_sheet.max_row, 3)
+            self.assertEqual(detail_sheet["A2"].value, "CK001")
+            self.assertEqual(detail_sheet["D2"].value, 3.0)
+            self.assertEqual(detail_sheet["E2"].value, 130.0)
+            self.assertEqual(detail_sheet["A3"].value, "CK002")
+            self.assertEqual(detail_sheet["E3"].value, 88.0)
+            self.assertNotEqual(detail_sheet["H2"].value, None)
+            self.assertNotEqual(detail_sheet["I2"].value, None)
 
 
 if __name__ == "__main__":

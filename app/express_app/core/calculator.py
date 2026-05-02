@@ -58,9 +58,17 @@ SUMMARY_SHEET_NAME = "快递费汇总"
 DETAIL_SHEET_NAME = "快递明细"
 CUSTOMER_HISTORY_SUMMARY_FILE = "客户快递费历史汇总.xlsx"
 CUSTOMER_HISTORY_SHEET = "历史汇总"
+CUSTOMER_HISTORY_DETAIL_SHEET = "快递明细"
 CUSTOMER_PAYMENT_SHEET = "收款记录"
 CUSTOMER_PAYMENT_HEADERS = ["支付时间", "支付方式", "收款人", "已付金额", "收款时间"]
 CUSTOMER_PAYMENT_MIN_ROWS = 20
+CUSTOMER_HISTORY_DETAIL_SYSTEM_HEADERS = [
+    "历史记录Key",
+    "首次导入时间",
+    "最后更新时间",
+    "来源明细文件",
+    "来源行号",
+]
 DAILY_DETAIL_FILE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}_.+_快递费明细\.xlsx$")
 PRICE_COLUMNS = {
     "province": "省份参照列",
@@ -149,7 +157,10 @@ class ProcessingSummary:
 
     def add_error(self, row_number: int, message: str) -> None:
         self.failed_rows += 1
-        self.errors.append(f"第 {row_number} 行：{message}")
+        if message.startswith("["):
+            self.errors.append(message)
+        else:
+            self.errors.append(f"第 {row_number} 行：{message}")
 
 
 @dataclass
@@ -208,6 +219,16 @@ class CustomerHistorySummary:
             self.errors = []
 
 
+@dataclass
+class HistoricalDetailRow:
+    visible_values: list[Any]
+    record_key: str
+    first_imported_at: str
+    last_updated_at: str
+    source_file: str
+    source_row: int
+
+
 def normalize_text(value: Any) -> str:
     if value is None:
         return ""
@@ -252,6 +273,39 @@ def parse_shipping_date(value: Any) -> str:
         return datetime.fromisoformat(normalized).date().isoformat()
     except ValueError as exc:
         raise ValueError(f"出库日期无法解析：{value}") from exc
+
+
+def parse_shipping_datetime(value: Any) -> datetime:
+    if value is None or value == "":
+        raise ValueError("出库日期为空")
+    if isinstance(value, datetime):
+        return value.replace(microsecond=0)
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+
+    text = normalize_text(value)
+    if not text:
+        raise ValueError("出库日期为空")
+
+    normalized = text.replace("/", "-")
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(normalized, fmt).replace(microsecond=0)
+        except ValueError:
+            pass
+
+    try:
+        return datetime.fromisoformat(normalized).replace(microsecond=0)
+    except ValueError as exc:
+        raise ValueError(f"出库日期无法解析：{value}") from exc
+
+
+def build_historical_detail_key(outbound_number: Any, shipping_time: Any) -> str:
+    outbound_text = normalize_text(outbound_number)
+    if not outbound_text:
+        raise ValueError("出库单号为空")
+    shipping_datetime = parse_shipping_datetime(shipping_time)
+    return f"{outbound_text}|{shipping_datetime:%Y-%m-%d %H:%M:%S}"
 
 
 def sanitize_filename(value: Any) -> str:
@@ -302,11 +356,76 @@ def find_header_indexes(ws: openpyxl.worksheet.worksheet.Worksheet) -> dict[str,
     return headers
 
 
-def require_columns(headers: dict[str, int], required: list[str], source_name: str) -> None:
+def format_log_value(value: Any) -> str:
+    text = normalize_text(value)
+    return text or "空"
+
+
+def format_error_block(
+    category: str,
+    reason: str,
+    suggestion: str,
+    *,
+    stage: str | None = None,
+    location: str | None = None,
+    context: dict[str, Any] | None = None,
+    system_error: Any | None = None,
+) -> str:
+    lines = [f"[{category}]"]
+    if stage:
+        lines.append(f"阶段：{stage}")
+    if location:
+        lines.append(f"位置：{location}")
+    for key, value in (context or {}).items():
+        lines.append(f"{key}：{format_log_value(value)}")
+    lines.append(f"原因：{reason}")
+    lines.append(f"建议：{suggestion}")
+    if system_error:
+        lines.append(f"系统返回：{system_error}")
+    return "\n".join(lines)
+
+
+def format_missing_columns_error(
+    headers: dict[str, int],
+    missing: list[str],
+    source_name: str,
+    *,
+    category: str,
+    stage: str,
+    suggestion: str,
+) -> str:
+    detected_headers = "、".join(headers) if headers else "未识别到任何表头"
+    return format_error_block(
+        category,
+        f"缺少必要列：{'、'.join(missing)}",
+        suggestion,
+        stage=stage,
+        location=source_name,
+        context={"当前识别到的列": detected_headers},
+    )
+
+
+def require_columns(
+    headers: dict[str, int],
+    required: list[str],
+    source_name: str,
+    *,
+    category: str = "表结构错误",
+    stage: str = "检查表头",
+    suggestion: str = "请检查表头是否完整，并确认选择的是正确的 Excel 文件。",
+) -> None:
     missing = [column for column in required if column not in headers]
     if missing:
-        joined = "、".join(missing)
-        raise ValueError(f"{source_name} 缺少必要列：{joined}")
+        raise ValueError(
+            format_missing_columns_error(
+                headers,
+                missing,
+                source_name,
+                category=category,
+                stage=stage,
+                suggestion=suggestion,
+            )
+        )
 
 
 def parse_standard_express_company(
@@ -356,7 +475,15 @@ def resolve_price_sheet_name(
 
 def load_price_tables(price_dir: Path) -> dict[tuple[str, str, str], Price]:
     if not price_dir.exists():
-        raise FileNotFoundError(f"报价目录不存在：{price_dir}")
+        raise FileNotFoundError(
+            format_error_block(
+                "报价表错误",
+                f"报价目录不存在：{price_dir}",
+                "请重新选择报价表目录，确认目录存在且当前用户有读取权限。",
+                stage="读取报价表",
+                location=str(price_dir),
+            )
+        )
 
     price_map: dict[tuple[str, str, str], Price] = {}
     price_files = sorted(
@@ -366,9 +493,14 @@ def load_price_tables(price_dir: Path) -> dict[tuple[str, str, str], Price]:
     )
     if not price_files:
         raise FileNotFoundError(
-            f"报价目录下没有 .xlsx 文件：{price_dir}。"
-            "如果文件实际存在，请在桌面软件中重新选择报价表目录，"
-            "让 macOS 授权当前应用访问该目录。"
+            format_error_block(
+                "报价表错误",
+                "目录中没有找到可用的 .xlsx 报价文件。",
+                "请重新选择报价表目录，确认选择的是包含业务员报价 Excel 的目录。",
+                stage="读取报价表",
+                location=str(price_dir),
+                context={"报价目录": price_dir},
+            )
         )
 
     for price_file in price_files:
@@ -388,6 +520,11 @@ def load_price_tables(price_dir: Path) -> dict[tuple[str, str, str], Price]:
                     PRICE_COLUMNS["extra_price"],
                 ],
                 f"{price_file.name}/{ws.title}",
+                category="报价表错误",
+                stage="读取报价表",
+                suggestion=(
+                    "请检查报价表 sheet 表头，必须包含「省份参照列」「首重费用」「续重费用」。"
+                ),
             )
 
             province_col = headers[PRICE_COLUMNS["province"]]
@@ -521,7 +658,14 @@ def process_sales_workbook(
 
     delete_columns_by_header(ws, RESULT_COLUMNS)
     sales_headers = find_header_indexes(ws)
-    require_columns(sales_headers, REQUIRED_SALES_COLUMNS, sales_file.name)
+    require_columns(
+        sales_headers,
+        REQUIRED_SALES_COLUMNS,
+        str(sales_file),
+        category="销售表结构错误",
+        stage="读取销售出库单",
+        suggestion="请恢复销售出库单表头，尤其是「出库日期」「业务员」「快递公司」「省」「重量」。",
+    )
     result_columns = append_result_columns(ws)
 
     summary = ProcessingSummary(total_rows=max(ws.max_row - 1, 0))
@@ -535,6 +679,13 @@ def process_sales_workbook(
         for column_name in RESULT_COLUMNS:
             ws.cell(row=row, column=result_columns[column_name]).value = None
 
+        salesman = ""
+        raw_express_company = None
+        express_company = ""
+        province = ""
+        weight_value = None
+        weight: float | None = None
+        price_sheet_name = ""
         try:
             salesman = normalize_text(ws.cell(row=row, column=salesman_col).value)
             raw_express_company = ws.cell(row=row, column=raw_express_col).value
@@ -544,7 +695,8 @@ def process_sales_workbook(
                 rule_config,
             )
             province = normalize_text(ws.cell(row=row, column=province_col).value)
-            weight = parse_number(ws.cell(row=row, column=weight_col).value, "重量")
+            weight_value = ws.cell(row=row, column=weight_col).value
+            weight = parse_number(weight_value, "重量")
             price_sheet_name = resolve_price_sheet_name(
                 express_company,
                 weight,
@@ -563,9 +715,37 @@ def process_sales_workbook(
             key = (salesman, price_sheet_name, province)
             price = price_map.get(key)
             if price is None:
+                if (
+                    price_sheet_name.endswith(rule_config.large_piece_suffix)
+                    and (salesman, express_company, province) in price_map
+                ):
+                    reason = f"缺少大件报价模板：{price_sheet_name}"
+                    suggestion = (
+                        f"请在 {salesman} 的报价表中新增 sheet「{price_sheet_name}」，"
+                        f"并填写「{province}」的首重和续重价格。"
+                    )
+                else:
+                    reason = "找不到对应报价。"
+                    suggestion = (
+                        f"请检查 {salesman} 的报价表中是否存在 sheet「{price_sheet_name}」，"
+                        f"并确认其中有「{province}」的首重和续重价格。"
+                    )
                 raise ValueError(
-                    "找不到报价："
-                    f"业务员={salesman}，计费模板={price_sheet_name}，省={province}"
+                    format_error_block(
+                        "报价表错误",
+                        reason,
+                        suggestion,
+                        stage="匹配报价",
+                        location=f"销售表 第 {row} 行",
+                        context={
+                            "业务员": salesman,
+                            "原始快递公司": raw_express_company,
+                            "标准快递公司": express_company,
+                            "计费模板": price_sheet_name,
+                            "省": province,
+                            "重量": weight,
+                        },
+                    )
                 )
 
             fee, extra_weight = calculate_fee(
@@ -581,7 +761,41 @@ def process_sales_workbook(
             ws.cell(row=row, column=result_columns["续重重量"]).value = extra_weight
             summary.success_rows += 1
         except ValueError as exc:
-            summary.add_error(row, str(exc))
+            message = str(exc)
+            if not message.startswith("["):
+                reason = message
+                suggestion = "请检查该行的业务员、快递公司、省和重量是否填写完整且格式正确。"
+                context = {
+                    "行号": row,
+                    "业务员": salesman,
+                    "原始快递公司": raw_express_company,
+                    "标准快递公司": express_company or "未识别",
+                    "计费模板": price_sheet_name or "未确定",
+                    "省": province,
+                    "重量原值": weight_value,
+                }
+                if reason.startswith("重量不是数字"):
+                    suggestion = "请将重量改为数字，例如 1、2.5、20。"
+                elif reason.startswith("重量为空"):
+                    suggestion = "请补充重量，重量必须是数字，例如 1、2.5、20。"
+                elif reason.startswith("重量必须大于0"):
+                    suggestion = "请将重量改为大于 0 的数字。"
+                elif "快递公司" in reason:
+                    suggestion = "请检查快递公司名称，或在规则配置中补充快递公司映射。"
+                elif reason == "业务员为空":
+                    suggestion = "请补充业务员，系统会用业务员匹配对应报价表。"
+                elif reason == "省为空":
+                    suggestion = "请补充省份，省份需要与报价表中的省份名称一致。"
+
+                message = format_error_block(
+                    "行级计算错误",
+                    reason,
+                    suggestion,
+                    stage="计算快递费",
+                    location=f"销售表 第 {row} 行",
+                    context=context,
+                )
+            summary.add_error(row, message)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(output_path)
@@ -781,85 +995,88 @@ def read_daily_customer_summary(
     rule_config: ExpressFeeRuleConfig,
 ) -> DailyCustomerSummary:
     workbook = openpyxl.load_workbook(path, data_only=True, read_only=True)
-    if DETAIL_SHEET_NAME not in workbook.sheetnames:
-        raise ValueError(f"缺少 {DETAIL_SHEET_NAME} sheet")
-
-    ws = workbook[DETAIL_SHEET_NAME]
-    row_iter = ws.iter_rows(values_only=True)
     try:
-        headers = list(next(row_iter))
-    except StopIteration as exc:
-        raise ValueError("快递明细为空") from exc
-    header_map = {header: index for index, header in enumerate(headers) if header}
-    required = [SHIPPING_DATE_COLUMN, "业务员", "重量", "快递费用", STANDARD_EXPRESS_COLUMN]
-    missing = [column for column in required if column not in header_map]
-    if missing:
-        raise ValueError(f"快递明细缺少必要列：{'、'.join(missing)}")
+        if DETAIL_SHEET_NAME not in workbook.sheetnames:
+            raise ValueError(f"缺少 {DETAIL_SHEET_NAME} sheet")
 
-    dates: set[str] = set()
-    customers: set[str] = set()
-    row_count = 0
-    total_weight = 0.0
-    total_fee = 0.0
-    large_count = 0
-    express_summary: dict[str, dict[str, float]] = {}
+        ws = workbook[DETAIL_SHEET_NAME]
+        row_iter = ws.iter_rows(values_only=True)
+        try:
+            headers = list(next(row_iter))
+        except StopIteration as exc:
+            raise ValueError("快递明细为空") from exc
+        header_map = {header: index for index, header in enumerate(headers) if header}
+        required = [SHIPPING_DATE_COLUMN, "业务员", "重量", "快递费用", STANDARD_EXPRESS_COLUMN]
+        missing = [column for column in required if column not in header_map]
+        if missing:
+            raise ValueError(f"快递明细缺少必要列：{'、'.join(missing)}")
 
-    for row_number, row_values_tuple in enumerate(row_iter, start=2):
-        row_values = list(row_values_tuple)
-        if all(value in (None, "") for value in row_values):
-            continue
+        dates: set[str] = set()
+        customers: set[str] = set()
+        row_count = 0
+        total_weight = 0.0
+        total_fee = 0.0
+        large_count = 0
+        express_summary: dict[str, dict[str, float]] = {}
 
-        shipping_date = parse_shipping_date(row_values[header_map[SHIPPING_DATE_COLUMN]])
-        customer = normalize_text(row_values[header_map["业务员"]])
-        if not customer:
-            raise ValueError(f"第 {row_number} 行业务员为空")
+        for row_number, row_values_tuple in enumerate(row_iter, start=2):
+            row_values = list(row_values_tuple)
+            if all(value in (None, "") for value in row_values):
+                continue
 
-        express_company = normalize_text(row_values[header_map[STANDARD_EXPRESS_COLUMN]]) or "未识别"
-        weight = number_or_zero(row_values[header_map["重量"]])
-        fee = number_or_zero(row_values[header_map["快递费用"]])
+            shipping_date = parse_shipping_date(row_values[header_map[SHIPPING_DATE_COLUMN]])
+            customer = normalize_text(row_values[header_map["业务员"]])
+            if not customer:
+                raise ValueError(f"第 {row_number} 行业务员为空")
 
-        dates.add(shipping_date)
-        customers.add(customer)
-        row_count += 1
-        total_weight += weight
-        total_fee += fee
-        if (
-            express_company in rule_config.large_piece_companies
-            and weight >= rule_config.large_piece_threshold_kg
-        ):
-            large_count += 1
+            express_company = normalize_text(row_values[header_map[STANDARD_EXPRESS_COLUMN]]) or "未识别"
+            weight = number_or_zero(row_values[header_map["重量"]])
+            fee = number_or_zero(row_values[header_map["快递费用"]])
 
-        bucket = express_summary.setdefault(
-            express_company,
-            {"count": 0, "weight": 0.0, "fee": 0.0},
+            dates.add(shipping_date)
+            customers.add(customer)
+            row_count += 1
+            total_weight += weight
+            total_fee += fee
+            if (
+                express_company in rule_config.large_piece_companies
+                and weight >= rule_config.large_piece_threshold_kg
+            ):
+                large_count += 1
+
+            bucket = express_summary.setdefault(
+                express_company,
+                {"count": 0, "weight": 0.0, "fee": 0.0},
+            )
+            bucket["count"] += 1
+            bucket["weight"] += weight
+            bucket["fee"] += fee
+
+        if row_count == 0:
+            raise ValueError("快递明细为空")
+        if len(dates) != 1:
+            raise ValueError(f"快递明细包含多个日期：{'、'.join(sorted(dates))}")
+        if len(customers) != 1:
+            raise ValueError(f"快递明细包含多个客户：{'、'.join(sorted(customers))}")
+
+        updated_at = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        return DailyCustomerSummary(
+            customer=next(iter(customers)),
+            shipping_date=next(iter(dates)),
+            row_count=row_count,
+            total_weight=total_weight,
+            total_fee=total_fee,
+            sf_count=int(express_summary.get("顺丰", {}).get("count", 0)),
+            st_count=int(express_summary.get("申通", {}).get("count", 0)),
+            db_count=int(express_summary.get("德邦", {}).get("count", 0)),
+            large_count=large_count,
+            express_summary=express_summary,
+            file_name=path.name,
+            file_path=path,
+            updated_at=updated_at,
         )
-        bucket["count"] += 1
-        bucket["weight"] += weight
-        bucket["fee"] += fee
-
-    if row_count == 0:
-        raise ValueError("快递明细为空")
-    if len(dates) != 1:
-        raise ValueError(f"快递明细包含多个日期：{'、'.join(sorted(dates))}")
-    if len(customers) != 1:
-        raise ValueError(f"快递明细包含多个客户：{'、'.join(sorted(customers))}")
-
-    updated_at = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-    return DailyCustomerSummary(
-        customer=next(iter(customers)),
-        shipping_date=next(iter(dates)),
-        row_count=row_count,
-        total_weight=total_weight,
-        total_fee=total_fee,
-        sf_count=int(express_summary.get("顺丰", {}).get("count", 0)),
-        st_count=int(express_summary.get("申通", {}).get("count", 0)),
-        db_count=int(express_summary.get("德邦", {}).get("count", 0)),
-        large_count=large_count,
-        express_summary=express_summary,
-        file_name=path.name,
-        file_path=path,
-        updated_at=updated_at,
-    )
+    finally:
+        workbook.close()
 
 
 def apply_sheet_basics(ws: openpyxl.worksheet.worksheet.Worksheet) -> None:
@@ -1027,6 +1244,194 @@ def copy_worksheet_contents(
         target.auto_filter.ref = source.auto_filter.ref
 
 
+def find_existing_customer_history_workbook(paths: list[Path]) -> Path | None:
+    for path in paths:
+        if path.exists():
+            return path
+    return None
+
+
+def read_existing_history_detail_rows(
+    workbook_path: Path | None,
+) -> tuple[list[str] | None, dict[str, HistoricalDetailRow]]:
+    if workbook_path is None:
+        return None, {}
+
+    workbook = openpyxl.load_workbook(workbook_path, data_only=False, read_only=True)
+    try:
+        if CUSTOMER_HISTORY_DETAIL_SHEET not in workbook.sheetnames:
+            return None, {}
+
+        ws = workbook[CUSTOMER_HISTORY_DETAIL_SHEET]
+        rows = ws.iter_rows(values_only=True)
+        try:
+            headers = [normalize_text(value) for value in next(rows)]
+        except StopIteration:
+            return None, {}
+
+        system_start_index = None
+        for index, header in enumerate(headers):
+            if header == CUSTOMER_HISTORY_DETAIL_SYSTEM_HEADERS[0]:
+                system_start_index = index
+                break
+        if system_start_index is None:
+            visible_headers = [header for header in headers if header]
+            system_start_index = len(visible_headers)
+        else:
+            visible_headers = headers[:system_start_index]
+
+        key_index = system_start_index
+        first_imported_index = system_start_index + 1
+        last_updated_index = system_start_index + 2
+        source_file_index = system_start_index + 3
+        source_row_index = system_start_index + 4
+
+        detail_rows: dict[str, HistoricalDetailRow] = {}
+        for row_values_tuple in rows:
+            row_values = list(row_values_tuple)
+            if all(value in (None, "") for value in row_values):
+                continue
+            record_key = normalize_text(row_values[key_index] if key_index < len(row_values) else None)
+            if not record_key:
+                header_map = {header: index for index, header in enumerate(visible_headers) if header}
+                if "出库单号" not in header_map or SHIPPING_DATE_COLUMN not in header_map:
+                    continue
+                try:
+                    record_key = build_historical_detail_key(
+                        row_values[header_map["出库单号"]],
+                        row_values[header_map[SHIPPING_DATE_COLUMN]],
+                    )
+                except ValueError:
+                    continue
+
+            detail_rows[record_key] = HistoricalDetailRow(
+                visible_values=row_values[:system_start_index],
+                record_key=record_key,
+                first_imported_at=normalize_text(
+                    row_values[first_imported_index]
+                    if first_imported_index < len(row_values)
+                    else None
+                ),
+                last_updated_at=normalize_text(
+                    row_values[last_updated_index] if last_updated_index < len(row_values) else None
+                ),
+                source_file=normalize_text(
+                    row_values[source_file_index] if source_file_index < len(row_values) else None
+                ),
+                source_row=int(number_or_zero(row_values[source_row_index]))
+                if source_row_index < len(row_values)
+                else 0,
+            )
+
+        return visible_headers or None, detail_rows
+    finally:
+        workbook.close()
+
+
+def load_daily_detail_rows_for_history(
+    customer_dir: Path,
+    existing_workbook_path: Path | None,
+) -> tuple[list[str], list[HistoricalDetailRow], list[str]]:
+    visible_headers, detail_rows = read_existing_history_detail_rows(existing_workbook_path)
+    errors: list[str] = []
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    for detail_file in sorted(customer_dir.iterdir()):
+        if not is_daily_detail_file(detail_file):
+            continue
+        workbook = openpyxl.load_workbook(detail_file, data_only=True, read_only=True)
+        try:
+            if DETAIL_SHEET_NAME not in workbook.sheetnames:
+                errors.append(f"{detail_file.name}：缺少 {DETAIL_SHEET_NAME} sheet")
+                continue
+            ws = workbook[DETAIL_SHEET_NAME]
+            row_iter = ws.iter_rows(values_only=True)
+            try:
+                headers = list(next(row_iter))
+            except StopIteration:
+                errors.append(f"{detail_file.name}：快递明细为空")
+                continue
+
+            normalized_headers = [normalize_text(header) for header in headers]
+            header_map = {header: index for index, header in enumerate(normalized_headers) if header}
+            missing = [
+                column
+                for column in ("出库单号", SHIPPING_DATE_COLUMN)
+                if column not in header_map
+            ]
+            if missing:
+                errors.append(f"{detail_file.name}：快递明细缺少必要列：{'、'.join(missing)}")
+                continue
+
+            if visible_headers is None:
+                visible_headers = normalized_headers
+
+            for row_number, row_values_tuple in enumerate(row_iter, start=2):
+                row_values = list(row_values_tuple)
+                if all(value in (None, "") for value in row_values):
+                    continue
+                try:
+                    record_key = build_historical_detail_key(
+                        row_values[header_map["出库单号"]],
+                        row_values[header_map[SHIPPING_DATE_COLUMN]],
+                    )
+                except ValueError as exc:
+                    errors.append(f"{detail_file.name} 第 {row_number} 行：{exc}")
+                    continue
+
+                previous = detail_rows.get(record_key)
+                first_imported_at = previous.first_imported_at if previous else now_text
+                detail_rows[record_key] = HistoricalDetailRow(
+                    visible_values=row_values[: len(visible_headers)],
+                    record_key=record_key,
+                    first_imported_at=first_imported_at or now_text,
+                    last_updated_at=now_text,
+                    source_file=detail_file.name,
+                    source_row=row_number,
+                )
+        finally:
+            workbook.close()
+
+    return visible_headers or [], list(detail_rows.values()), errors
+
+
+def write_customer_history_detail_sheet(
+    ws: openpyxl.worksheet.worksheet.Worksheet,
+    visible_headers: list[str],
+    detail_rows: list[HistoricalDetailRow],
+) -> None:
+    headers = visible_headers + CUSTOMER_HISTORY_DETAIL_SYSTEM_HEADERS
+    ws.append(headers)
+    style_history_header(ws)
+    ws.row_dimensions[1].height = 28
+
+    visible_column_count = len(visible_headers)
+    for detail_row in detail_rows:
+        values = list(detail_row.visible_values)
+        if len(values) < visible_column_count:
+            values.extend([None] * (visible_column_count - len(values)))
+        ws.append(
+            values[:visible_column_count]
+            + [
+                detail_row.record_key,
+                detail_row.first_imported_at,
+                detail_row.last_updated_at,
+                detail_row.source_file,
+                detail_row.source_row,
+            ]
+        )
+        ws.row_dimensions[ws.max_row].height = 24
+
+    style_header_row(ws)
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    autosize_columns(ws)
+    apply_table_border(ws)
+
+    for column_index in range(visible_column_count + 1, len(headers) + 1):
+        ws.column_dimensions[get_column_letter(column_index)].hidden = True
+
+
 def write_customer_payment_sheet(ws: openpyxl.worksheet.worksheet.Worksheet) -> None:
     is_empty_sheet = ws.max_row == 1 and ws.max_column == 1 and ws["A1"].value is None
     if is_empty_sheet:
@@ -1083,6 +1488,7 @@ def build_customer_history_summary(
     customer = customer_dir.name
     output_path = customer_dir / customer_history_summary_file_name(customer)
     legacy_output_path = customer_dir / CUSTOMER_HISTORY_SUMMARY_FILE
+    existing_workbook_path = find_existing_customer_history_workbook([output_path, legacy_output_path])
     errors: list[str] = []
     daily_summaries: list[DailyCustomerSummary] = []
 
@@ -1112,6 +1518,14 @@ def build_customer_history_summary(
     history_sheet = workbook.active
     history_sheet.title = CUSTOMER_HISTORY_SHEET
     write_customer_history_sheet(history_sheet, daily_summaries)
+
+    visible_headers, detail_rows, detail_errors = load_daily_detail_rows_for_history(
+        customer_dir,
+        existing_workbook_path,
+    )
+    errors.extend(detail_errors)
+    detail_sheet = workbook.create_sheet(CUSTOMER_HISTORY_DETAIL_SHEET)
+    write_customer_history_detail_sheet(detail_sheet, visible_headers, detail_rows)
 
     add_or_preserve_customer_payment_sheet(workbook, [output_path, legacy_output_path])
 
@@ -1360,7 +1774,16 @@ def run_express_fee_batch_job(
         try:
             result = run_express_fee_job(job_config)
         except Exception as exc:  # Keep a batch moving if one workbook is bad.
-            message = f"运行失败：{exc}"
+            message = str(exc)
+            if not message.startswith("["):
+                message = format_error_block(
+                    "未知错误",
+                    str(exc),
+                    "请复制完整运行日志给开发者排查。",
+                    stage="处理销售表",
+                    location=str(sales_file),
+                    system_error=exc.__class__.__name__,
+                )
             result = ExpressFeeJobResult(
                 sales_file=sales_file,
                 price_dir=price_dir,

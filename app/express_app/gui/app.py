@@ -30,6 +30,21 @@ from express_app.version import APP_DISPLAY_NAME, APP_VERSION_LABEL
 
 APP_TITLE = f"{APP_DISPLAY_NAME} {APP_VERSION_LABEL}"
 OUTPUT_VERSION_LABEL = APP_VERSION_LABEL
+OPTION_SELECTED_PREFIX = "✅"
+OPTION_UNSELECTED_PREFIX = "□"
+RULE_WINDOW_TITLE = "快递识别与大件规则"
+EXPRESS_MAPPING_HELP_TEXT = (
+    "把销售表里的原始快递名称，对应到报价表 sheet 名。格式：原始快递名称=标准快递名称，"
+    "例如 顺丰速运新3=顺丰。"
+)
+KEYWORD_MAPPING_HELP_TEXT = (
+    "用于兜底识别：当原始快递名称包含关键词时，自动识别为标准快递名称。"
+    "格式：关键词=标准快递名称，例如 顺丰=顺丰。"
+)
+LARGE_RULE_HELP_TEXT = (
+    "达到重量阈值后，系统会使用 标准快递名称+模板后缀 的报价 sheet，"
+    "例如 顺丰_大件、德邦_大件。"
+)
 
 COLORS = {
     "background": "#F8FAFC",
@@ -46,6 +61,11 @@ COLORS = {
 }
 
 
+def format_option_label(label: str, selected: bool) -> str:
+    prefix = OPTION_SELECTED_PREFIX if selected else OPTION_UNSELECTED_PREFIX
+    return f"{prefix} {label}"
+
+
 class RuleConfigWindow(tk.Toplevel):
     def __init__(
         self,
@@ -54,9 +74,9 @@ class RuleConfigWindow(tk.Toplevel):
         on_save,
     ) -> None:
         super().__init__(parent)
-        self.title("规则配置")
-        self.geometry("760x640")
-        self.minsize(680, 560)
+        self.title(RULE_WINDOW_TITLE)
+        self.geometry("840x720")
+        self.minsize(760, 640)
         self.transient(parent)
         self.grab_set()
 
@@ -75,66 +95,96 @@ class RuleConfigWindow(tk.Toplevel):
         root = ttk.Frame(self, padding=14)
         root.pack(fill=tk.BOTH, expand=True)
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(1, weight=1)
-        root.rowconfigure(3, weight=1)
 
-        large_frame = ttk.LabelFrame(root, text="大件规则", padding=10)
-        large_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        title = ttk.Label(
+            root,
+            text="核心识别规则：销售表快递名称 → 报价表 sheet",
+            font=("Helvetica Neue", 13, "bold"),
+        )
+        title.grid(row=0, column=0, sticky="w", pady=(0, 6))
+        intro = ttk.Label(
+            root,
+            text="优先维护这里。系统先按精确映射识别，再用关键词映射兜底，识别结果必须能对应报价表里的 sheet 名。",
+            wraplength=780,
+            foreground=COLORS["muted"],
+        )
+        intro.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+
+        exact_frame = ttk.LabelFrame(root, text="1. 精确映射（优先匹配）", padding=10)
+        exact_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
+        exact_frame.rowconfigure(0, weight=1)
+        exact_frame.columnconfigure(0, weight=1)
+        ttk.Label(
+            exact_frame,
+            text=EXPRESS_MAPPING_HELP_TEXT,
+            wraplength=760,
+            foreground=COLORS["muted"],
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        self.exact_text = tk.Text(exact_frame, height=8, wrap=tk.NONE)
+        self.exact_text.grid(row=1, column=0, sticky="nsew")
+        exact_scroll = ttk.Scrollbar(
+            exact_frame,
+            orient=tk.VERTICAL,
+            command=self.exact_text.yview,
+        )
+        exact_scroll.grid(row=1, column=1, sticky="ns")
+        self.exact_text.configure(yscrollcommand=exact_scroll.set)
+
+        keyword_frame = ttk.LabelFrame(root, text="2. 关键词映射（兜底识别）", padding=10)
+        keyword_frame.grid(row=3, column=0, sticky="nsew", pady=(0, 10))
+        keyword_frame.rowconfigure(0, weight=1)
+        keyword_frame.columnconfigure(0, weight=1)
+        ttk.Label(
+            keyword_frame,
+            text=KEYWORD_MAPPING_HELP_TEXT,
+            wraplength=760,
+            foreground=COLORS["muted"],
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        self.keyword_text = tk.Text(keyword_frame, height=7, wrap=tk.NONE)
+        self.keyword_text.grid(row=1, column=0, sticky="nsew")
+        keyword_scroll = ttk.Scrollbar(
+            keyword_frame,
+            orient=tk.VERTICAL,
+            command=self.keyword_text.yview,
+        )
+        keyword_scroll.grid(row=1, column=1, sticky="ns")
+        self.keyword_text.configure(yscrollcommand=keyword_scroll.set)
+
+        large_frame = ttk.LabelFrame(root, text="高级计费规则：大件模板", padding=10)
+        large_frame.grid(row=4, column=0, sticky="ew", pady=(0, 10))
         large_frame.columnconfigure(1, weight=1)
-        ttk.Label(large_frame, text="大件快递").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            large_frame,
+            text=LARGE_RULE_HELP_TEXT,
+            wraplength=760,
+            foreground=COLORS["muted"],
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        ttk.Label(large_frame, text="大件快递").grid(row=1, column=0, sticky="w")
         ttk.Entry(large_frame, textvariable=self.large_companies_var).grid(
-            row=0,
+            row=1,
             column=1,
             sticky="ew",
             padx=(10, 0),
         )
-        ttk.Label(large_frame, text="重量阈值").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(large_frame, text="重量阈值").grid(row=2, column=0, sticky="w", pady=(8, 0))
         ttk.Entry(large_frame, textvariable=self.threshold_var, width=12).grid(
-            row=1,
-            column=1,
-            sticky="w",
-            padx=(10, 0),
-            pady=(8, 0),
-        )
-        ttk.Label(large_frame, text="模板后缀").grid(row=2, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(large_frame, textvariable=self.suffix_var, width=18).grid(
             row=2,
             column=1,
             sticky="w",
             padx=(10, 0),
             pady=(8, 0),
         )
-
-        exact_frame = ttk.LabelFrame(root, text="快递公司精确映射", padding=10)
-        exact_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
-        exact_frame.rowconfigure(0, weight=1)
-        exact_frame.columnconfigure(0, weight=1)
-        self.exact_text = tk.Text(exact_frame, height=8, wrap=tk.NONE)
-        self.exact_text.grid(row=0, column=0, sticky="nsew")
-        exact_scroll = ttk.Scrollbar(
-            exact_frame,
-            orient=tk.VERTICAL,
-            command=self.exact_text.yview,
+        ttk.Label(large_frame, text="模板后缀").grid(row=3, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(large_frame, textvariable=self.suffix_var, width=18).grid(
+            row=3,
+            column=1,
+            sticky="w",
+            padx=(10, 0),
+            pady=(8, 0),
         )
-        exact_scroll.grid(row=0, column=1, sticky="ns")
-        self.exact_text.configure(yscrollcommand=exact_scroll.set)
-
-        keyword_frame = ttk.LabelFrame(root, text="快递公司关键词映射", padding=10)
-        keyword_frame.grid(row=3, column=0, sticky="nsew", pady=(0, 10))
-        keyword_frame.rowconfigure(0, weight=1)
-        keyword_frame.columnconfigure(0, weight=1)
-        self.keyword_text = tk.Text(keyword_frame, height=7, wrap=tk.NONE)
-        self.keyword_text.grid(row=0, column=0, sticky="nsew")
-        keyword_scroll = ttk.Scrollbar(
-            keyword_frame,
-            orient=tk.VERTICAL,
-            command=self.keyword_text.yview,
-        )
-        keyword_scroll.grid(row=0, column=1, sticky="ns")
-        self.keyword_text.configure(yscrollcommand=keyword_scroll.set)
 
         actions = ttk.Frame(root)
-        actions.grid(row=4, column=0, sticky="ew")
+        actions.grid(row=5, column=0, sticky="ew")
         ttk.Button(actions, text="恢复默认规则", command=self._restore_defaults).pack(
             side=tk.LEFT
         )
@@ -281,6 +331,9 @@ class ExpressFeeApp(tk.Tk):
         self.split_var = tk.BooleanVar(value=gui_config.split_customer_daily_files)
         self.history_var = tk.BooleanVar(value=gui_config.generate_customer_history)
         self.refresh_all_var = tk.BooleanVar(value=gui_config.refresh_all_customers)
+        self.split_option_label_var = tk.StringVar()
+        self.history_option_label_var = tk.StringVar()
+        self.refresh_all_option_label_var = tk.StringVar()
         self.rule_config = gui_config.rule_config or build_default_rule_config()
         self.status_var = tk.StringVar(value="就绪")
         self.summary_sales_files_var = tk.StringVar(value="0")
@@ -289,6 +342,7 @@ class ExpressFeeApp(tk.Tk):
         self.summary_outputs_var = tk.StringVar(value="0")
 
         self._configure_styles()
+        self._refresh_option_labels()
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -379,6 +433,13 @@ class ExpressFeeApp(tk.Tk):
             background=COLORS["surface"],
             foreground=COLORS["text"],
             font=(font_family, 11),
+            indicatoron=False,
+            padding=(8, 5),
+        )
+        style.map(
+            "App.TCheckbutton",
+            background=[("selected", COLORS["surface_alt"]), ("active", COLORS["surface_alt"])],
+            foreground=[("selected", COLORS["primary_dark"])],
         )
         style.configure(
             "Treeview",
@@ -455,23 +516,23 @@ class ExpressFeeApp(tk.Tk):
         options.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(10, 0))
         ttk.Checkbutton(
             options,
-            text="生成客户每日明细",
+            textvariable=self.split_option_label_var,
             variable=self.split_var,
             command=self._sync_option_state,
             style="App.TCheckbutton",
         ).pack(side=tk.LEFT, padx=(0, 18))
         ttk.Checkbutton(
             options,
-            text="生成客户历史汇总",
+            textvariable=self.history_option_label_var,
             variable=self.history_var,
-            command=self._save_current_config,
+            command=self._sync_option_state,
             style="App.TCheckbutton",
         ).pack(side=tk.LEFT, padx=(0, 18))
         ttk.Checkbutton(
             options,
-            text="刷新全部客户历史汇总",
+            textvariable=self.refresh_all_option_label_var,
             variable=self.refresh_all_var,
-            command=self._save_current_config,
+            command=self._sync_option_state,
             style="App.TCheckbutton",
         ).pack(side=tk.LEFT)
 
@@ -670,7 +731,19 @@ class ExpressFeeApp(tk.Tk):
     def _sync_option_state(self) -> None:
         if not self.split_var.get():
             self.refresh_all_var.set(False)
+        self._refresh_option_labels()
         self._save_current_config()
+
+    def _refresh_option_labels(self) -> None:
+        self.split_option_label_var.set(
+            format_option_label("生成客户每日明细", self.split_var.get())
+        )
+        self.history_option_label_var.set(
+            format_option_label("生成客户历史汇总", self.history_var.get())
+        )
+        self.refresh_all_option_label_var.set(
+            format_option_label("刷新全部客户历史汇总", self.refresh_all_var.get())
+        )
 
     def _format_sales_files_display(self) -> str:
         if not self.sales_files:
