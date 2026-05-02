@@ -15,6 +15,7 @@ Pricing key:
 from __future__ import annotations
 
 import argparse
+import copy
 import math
 import re
 from dataclasses import dataclass
@@ -24,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import openpyxl
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from ..version import OUTPUT_VERSION_SUFFIX
@@ -57,8 +58,9 @@ SUMMARY_SHEET_NAME = "快递费汇总"
 DETAIL_SHEET_NAME = "快递明细"
 CUSTOMER_HISTORY_SUMMARY_FILE = "客户快递费历史汇总.xlsx"
 CUSTOMER_HISTORY_SHEET = "历史汇总"
-CUSTOMER_EXPRESS_SUMMARY_SHEET = "按快递公司汇总"
-CUSTOMER_DETAIL_INDEX_SHEET = "明细索引"
+CUSTOMER_PAYMENT_SHEET = "收款记录"
+CUSTOMER_PAYMENT_HEADERS = ["支付时间", "支付方式", "收款人", "已付金额", "收款时间"]
+CUSTOMER_PAYMENT_MIN_ROWS = 20
 DAILY_DETAIL_FILE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}_.+_快递费明细\.xlsx$")
 PRICE_COLUMNS = {
     "province": "省份参照列",
@@ -259,6 +261,17 @@ def sanitize_filename(value: Any) -> str:
     text = re.sub(r'[\\/:\*\?"<>\|]', "_", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text or "未命名客户"
+
+
+def customer_history_summary_file_name(customer: str) -> str:
+    safe_customer = sanitize_filename(customer)
+    return f"{safe_customer}_{CUSTOMER_HISTORY_SUMMARY_FILE}"
+
+
+def is_customer_history_summary_file(path: Path) -> bool:
+    return path.name == CUSTOMER_HISTORY_SUMMARY_FILE or path.name.endswith(
+        f"_{CUSTOMER_HISTORY_SUMMARY_FILE}"
+    )
 
 
 def detect_default_sales_file() -> Path:
@@ -758,7 +771,7 @@ def is_daily_detail_file(path: Path) -> bool:
         path.is_file()
         and path.suffix == ".xlsx"
         and not path.name.startswith("~$")
-        and path.name != CUSTOMER_HISTORY_SUMMARY_FILE
+        and not is_customer_history_summary_file(path)
         and DAILY_DETAIL_FILE_PATTERN.match(path.name) is not None
     )
 
@@ -855,6 +868,29 @@ def apply_sheet_basics(ws: openpyxl.worksheet.worksheet.Worksheet) -> None:
     autosize_columns(ws)
 
 
+def apply_table_border(
+    ws: openpyxl.worksheet.worksheet.Worksheet,
+    max_row: int | None = None,
+    max_column: int | None = None,
+) -> None:
+    border = Border(
+        left=Side(style="thin", color="B7B7B7"),
+        right=Side(style="thin", color="B7B7B7"),
+        top=Side(style="thin", color="B7B7B7"),
+        bottom=Side(style="thin", color="B7B7B7"),
+    )
+    last_row = max_row or ws.max_row
+    last_column = max_column or ws.max_column
+    for row in ws.iter_rows(
+        min_row=1,
+        max_row=last_row,
+        min_col=1,
+        max_col=last_column,
+    ):
+        for cell in row:
+            cell.border = border
+
+
 def write_customer_history_sheet(
     ws: openpyxl.worksheet.worksheet.Worksheet,
     daily_summaries: list[DailyCustomerSummary],
@@ -863,21 +899,27 @@ def write_customer_history_sheet(
         "日期",
         "单数",
         "总重量",
-        "总快递费用",
+        "今日快递总消费",
         "累计快递费用",
+        "今日收款",
+        "累计收款",
+        "当前余额",
         "顺丰单数",
         "申通单数",
         "德邦单数",
         "大件单数",
-        "明细文件",
     ]
     ws.append(headers)
     style_history_header(ws)
+    ws.row_dimensions[1].height = 30
 
     fills = [
         PatternFill("solid", fgColor="EAF4FF"),
         PatternFill("solid", fgColor="EAF7EA"),
     ]
+    highlight_fill = PatternFill("solid", fgColor="FFF2CC")
+    expense_fill = PatternFill("solid", fgColor="FCE4D6")
+    income_fill = PatternFill("solid", fgColor="E2F0D9")
     cumulative_fee = 0.0
     previous_date = None
     color_index = 0
@@ -887,30 +929,63 @@ def write_customer_history_sheet(
         previous_date = daily.shipping_date
         cumulative_fee += daily.total_fee
 
+        row_number = ws.max_row + 1
         ws.append(
             [
-                daily.shipping_date,
+                datetime.fromisoformat(daily.shipping_date).date(),
                 daily.row_count,
                 format_number(daily.total_weight),
                 round(daily.total_fee, 2),
                 round(cumulative_fee, 2),
+                (
+                    f'=SUMIFS(\'{CUSTOMER_PAYMENT_SHEET}\'!$D:$D,'
+                    f'\'{CUSTOMER_PAYMENT_SHEET}\'!$A:$A,">="&A{row_number},'
+                    f'\'{CUSTOMER_PAYMENT_SHEET}\'!$A:$A,"<"&A{row_number}+1)'
+                ),
+                (
+                    f'=SUMIFS(\'{CUSTOMER_PAYMENT_SHEET}\'!$D:$D,'
+                    f'\'{CUSTOMER_PAYMENT_SHEET}\'!$A:$A,"<"&A{row_number}+1,'
+                    f'\'{CUSTOMER_PAYMENT_SHEET}\'!$A:$A,"<>")'
+                ),
+                f"=G{row_number}-E{row_number}",
                 daily.sf_count,
                 daily.st_count,
                 daily.db_count,
                 daily.large_count,
-                daily.file_name,
             ]
         )
-        row_number = ws.max_row
+        ws.row_dimensions[row_number].height = 28
         for cell in ws[row_number]:
             cell.fill = fills[color_index]
             cell.alignment = Alignment(vertical="center")
-        for column in (4, 5):
+        ws.cell(row=row_number, column=1).number_format = "yyyy-mm-dd"
+        for column in (4, 5, 6, 7, 8):
             ws.cell(row=row_number, column=column).number_format = "0.00"
-        ws.cell(row=row_number, column=5).fill = PatternFill("solid", fgColor="FFF2CC")
-        ws.cell(row=row_number, column=5).font = Font(bold=True)
+        ws.cell(row=row_number, column=4).fill = expense_fill
+        ws.cell(row=row_number, column=6).fill = income_fill
+        for column in (4, 5, 6, 7, 8):
+            ws.cell(row=row_number, column=column).font = Font(bold=True)
+        for column in (5, 7, 8):
+            ws.cell(row=row_number, column=column).fill = highlight_fill
 
     apply_sheet_basics(ws)
+    history_widths = {
+        "A": 14,
+        "B": 10,
+        "C": 12,
+        "D": 20,
+        "E": 18,
+        "F": 16,
+        "G": 16,
+        "H": 16,
+        "I": 12,
+        "J": 12,
+        "K": 12,
+        "L": 12,
+    }
+    for column_letter, width in history_widths.items():
+        ws.column_dimensions[column_letter].width = width
+    apply_table_border(ws, max_column=len(headers))
 
 
 def style_history_header(ws: openpyxl.worksheet.worksheet.Worksheet) -> None:
@@ -922,66 +997,83 @@ def style_history_header(ws: openpyxl.worksheet.worksheet.Worksheet) -> None:
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
 
-def write_customer_express_summary_sheet(
-    ws: openpyxl.worksheet.worksheet.Worksheet,
-    daily_summaries: list[DailyCustomerSummary],
+def copy_worksheet_contents(
+    source: openpyxl.worksheet.worksheet.Worksheet,
+    target: openpyxl.worksheet.worksheet.Worksheet,
 ) -> None:
-    headers = [STANDARD_EXPRESS_COLUMN, "总单数", "总重量", "总快递费用", "费用占比"]
-    ws.append(headers)
+    for row in source.iter_rows():
+        for source_cell in row:
+            target_cell = target.cell(row=source_cell.row, column=source_cell.column)
+            target_cell.value = source_cell.value
+            if source_cell.has_style:
+                target_cell.font = copy.copy(source_cell.font)
+                target_cell.fill = copy.copy(source_cell.fill)
+                target_cell.border = copy.copy(source_cell.border)
+                target_cell.alignment = copy.copy(source_cell.alignment)
+                target_cell.number_format = source_cell.number_format
+                target_cell.protection = copy.copy(source_cell.protection)
+            if source_cell.hyperlink:
+                target_cell._hyperlink = copy.copy(source_cell.hyperlink)
+            if source_cell.comment:
+                target_cell.comment = copy.copy(source_cell.comment)
+
+    for column_letter, dimension in source.column_dimensions.items():
+        target.column_dimensions[column_letter].width = dimension.width
+    for row_index, dimension in source.row_dimensions.items():
+        target.row_dimensions[row_index].height = dimension.height
+    if source.freeze_panes:
+        target.freeze_panes = source.freeze_panes
+    if source.auto_filter.ref:
+        target.auto_filter.ref = source.auto_filter.ref
+
+
+def write_customer_payment_sheet(ws: openpyxl.worksheet.worksheet.Worksheet) -> None:
+    is_empty_sheet = ws.max_row == 1 and ws.max_column == 1 and ws["A1"].value is None
+    if is_empty_sheet:
+        for column, header in enumerate(CUSTOMER_PAYMENT_HEADERS, start=1):
+            ws.cell(row=1, column=column).value = header
+    elif [
+        ws.cell(row=1, column=column).value
+        for column in range(1, len(CUSTOMER_PAYMENT_HEADERS) + 1)
+    ] != CUSTOMER_PAYMENT_HEADERS:
+        ws.insert_rows(1)
+        for column, header in enumerate(CUSTOMER_PAYMENT_HEADERS, start=1):
+            ws.cell(row=1, column=column).value = header
+
     style_history_header(ws)
-
-    express_summary: dict[str, dict[str, float]] = {}
-    for daily in daily_summaries:
-        for express_company, values in daily.express_summary.items():
-            bucket = express_summary.setdefault(
-                express_company,
-                {"count": 0, "weight": 0.0, "fee": 0.0},
-            )
-            bucket["count"] += values["count"]
-            bucket["weight"] += values["weight"]
-            bucket["fee"] += values["fee"]
-
-    total_fee = sum(values["fee"] for values in express_summary.values())
-    for express_company in sorted(express_summary):
-        values = express_summary[express_company]
-        ratio = values["fee"] / total_fee if total_fee else 0
-        ws.append(
-            [
-                express_company,
-                int(values["count"]),
-                format_number(values["weight"]),
-                round(values["fee"], 2),
-                ratio,
-            ]
-        )
-        row_number = ws.max_row
+    max_row = max(ws.max_row, CUSTOMER_PAYMENT_MIN_ROWS)
+    for row_number in range(2, max_row + 1):
+        ws.cell(row=row_number, column=1).number_format = "yyyy-mm-dd"
         ws.cell(row=row_number, column=4).number_format = "0.00"
-        ws.cell(row=row_number, column=5).number_format = "0.00%"
-
+        ws.cell(row=row_number, column=5).number_format = "yyyy-mm-dd hh:mm"
+        ws.row_dimensions[row_number].height = 24
     apply_sheet_basics(ws)
+    payment_widths = {
+        "A": 14,
+        "B": 14,
+        "C": 14,
+        "D": 14,
+        "E": 20,
+    }
+    for column_letter, width in payment_widths.items():
+        ws.column_dimensions[column_letter].width = width
+    ws.row_dimensions[1].height = 28
+    apply_table_border(ws, max_row=max_row, max_column=len(CUSTOMER_PAYMENT_HEADERS))
 
 
-def write_customer_detail_index_sheet(
-    ws: openpyxl.worksheet.worksheet.Worksheet,
-    daily_summaries: list[DailyCustomerSummary],
+def add_or_preserve_customer_payment_sheet(
+    workbook: openpyxl.Workbook,
+    existing_summary_paths: list[Path],
 ) -> None:
-    headers = ["日期", "明细文件名", "文件路径", "单数", "总快递费用", "最后更新时间"]
-    ws.append(headers)
-    style_history_header(ws)
-    for daily in daily_summaries:
-        ws.append(
-            [
-                daily.shipping_date,
-                daily.file_name,
-                str(daily.file_path),
-                daily.row_count,
-                round(daily.total_fee, 2),
-                daily.updated_at,
-            ]
-        )
-        ws.cell(row=ws.max_row, column=5).number_format = "0.00"
-
-    apply_sheet_basics(ws)
+    payment_sheet = workbook.create_sheet(CUSTOMER_PAYMENT_SHEET)
+    for existing_summary_path in existing_summary_paths:
+        if not existing_summary_path.exists():
+            continue
+        existing_workbook = openpyxl.load_workbook(existing_summary_path, data_only=False)
+        if CUSTOMER_PAYMENT_SHEET in existing_workbook.sheetnames:
+            copy_worksheet_contents(existing_workbook[CUSTOMER_PAYMENT_SHEET], payment_sheet)
+            break
+    write_customer_payment_sheet(payment_sheet)
 
 
 def build_customer_history_summary(
@@ -989,7 +1081,8 @@ def build_customer_history_summary(
     rule_config: ExpressFeeRuleConfig,
 ) -> CustomerHistorySummary:
     customer = customer_dir.name
-    output_path = customer_dir / CUSTOMER_HISTORY_SUMMARY_FILE
+    output_path = customer_dir / customer_history_summary_file_name(customer)
+    legacy_output_path = customer_dir / CUSTOMER_HISTORY_SUMMARY_FILE
     errors: list[str] = []
     daily_summaries: list[DailyCustomerSummary] = []
 
@@ -1010,18 +1103,17 @@ def build_customer_history_summary(
             total_fee=0.0,
             output_path=None,
             errors=errors or ["没有可用的每日明细文件"],
-        )
+    )
 
     workbook = openpyxl.Workbook()
+    workbook.calculation.calcMode = "auto"
+    workbook.calculation.fullCalcOnLoad = True
+    workbook.calculation.forceFullCalc = True
     history_sheet = workbook.active
     history_sheet.title = CUSTOMER_HISTORY_SHEET
     write_customer_history_sheet(history_sheet, daily_summaries)
 
-    express_sheet = workbook.create_sheet(CUSTOMER_EXPRESS_SUMMARY_SHEET)
-    write_customer_express_summary_sheet(express_sheet, daily_summaries)
-
-    index_sheet = workbook.create_sheet(CUSTOMER_DETAIL_INDEX_SHEET)
-    write_customer_detail_index_sheet(index_sheet, daily_summaries)
+    add_or_preserve_customer_payment_sheet(workbook, [output_path, legacy_output_path])
 
     workbook.save(output_path)
     return CustomerHistorySummary(

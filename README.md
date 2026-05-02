@@ -10,7 +10,7 @@
 - 支持顺丰、德邦 20kg 以上大件模板。
 - 生成总结果 Excel。
 - 按业务员拆分客户每日明细。
-- 生成客户历史汇总表。
+- 生成客户历史汇总表，文件名带业务员名称，含收款记录和余额公式。
 - 提供 Tkinter 桌面 GUI。
 - 支持 macOS `.app` 打包。
 - 支持 GitHub Actions 打包 Windows `.exe`。
@@ -29,6 +29,7 @@ docs/
   PRD_艾松物流计费系统_V7_0_1_品牌升级.md
   PRD_艾松物流计费系统_V7_0_2_打开目录修复.md
   PRD_艾松物流计费系统_V7_0_4_德邦费用四舍五入.md
+  PRD_艾松物流计费系统_V7_0_5_收款记录和余额公式.md
   说明_当前快递费用计算逻辑.md
 .github/workflows/
   build-windows.yml
@@ -69,7 +70,7 @@ Actions -> Build Windows EXE -> Run workflow
 任务完成后下载 artifact：
 
 ```text
-aisong-logistics-billing-v7.0.4-windows
+aisong-logistics-billing-v7.0.5-windows
 ```
 
 其中包含：
