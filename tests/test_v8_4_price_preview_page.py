@@ -86,7 +86,18 @@ class V84PricePreviewPageTest(unittest.TestCase):
         )
         self.assertEqual(
             list(gui_app.V8_4_PRICE_TEMPLATE_COLUMNS),
-            ["序号", "Excel行号", "省份", "首重费用", "续重费用", "状态"],
+            ["省份", "首重费用", "续重费用", "省份", "首重费用", "续重费用"],
+        )
+        self.assertEqual(
+            list(gui_app.V8_4_PRICE_TEMPLATE_COLUMN_IDS),
+            [
+                "province_left",
+                "first_price_left",
+                "extra_price_left",
+                "province_right",
+                "first_price_right",
+                "extra_price_right",
+            ],
         )
         self.assertNotIn("重量", gui_app.V8_4_PRICE_TEMPLATE_ACTIONS)
         self.assertEqual(len(gui_app.V8_4_PRICE_TEMPLATE_COLUMNS), 6)
@@ -134,7 +145,11 @@ class V84PricePreviewPageTest(unittest.TestCase):
             self.assertEqual(app.price_template_selected_sheet, "顺丰")
             self.assertEqual(
                 app.price_template_rows_by_sheet["顺丰"][0],
-                ("1", "2", "上海市", "¥6.50", "¥0.90", "正常"),
+                ("上海市", "¥6.50", "¥0.90", "广东省", "¥6.90", "¥1.60"),
+            )
+            self.assertEqual(
+                app.price_template_rows_by_sheet["申通"][0],
+                ("上海市", "¥3.00", "¥1.00", "", "", ""),
             )
             self.assertIn("客户A", app.price_template_summary_var.get())
             self.assertIn("2 个快递公司", app.price_template_summary_var.get())

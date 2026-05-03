@@ -9,9 +9,12 @@ APP_DIR = Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP_DIR))
 
 from express_app.gui.app import (  # noqa: E402
+    SIDEBAR_BOTTOM_ACTIONS,
+    WORKBENCH_LABEL_FONT_SIZE,
     V8_2_1_AUTO_WORKFLOW_TRANSITIONS,
     V8_2_1_CONFIG_PAGE_SECTIONS,
     V8_2_1_CONFIG_GENERATION_OPTIONS,
+    V8_5_4_CONFIG_PAGE_ACTIONS,
     V8_2_1_CONFIG_SYSTEM_DIRECTORY_LABELS,
     V8_2_1_WORKFLOW_STEPS,
     ExpressFeeApp,
@@ -84,6 +87,14 @@ class V821WorkflowTest(unittest.TestCase):
 
     def test_sidebar_no_longer_has_global_run_action(self) -> None:
         self.assertNotIn("开始计算", V8_2_1_CONFIG_PAGE_SECTIONS)
+        self.assertEqual(list(SIDEBAR_BOTTOM_ACTIONS), ["系统设置", "打开客户目录"])
+        self.assertNotIn("打开输出目录", SIDEBAR_BOTTOM_ACTIONS)
+        self.assertGreaterEqual(WORKBENCH_LABEL_FONT_SIZE, 12)
+
+    def test_fee_config_page_no_longer_has_settings_shortcut_actions(self) -> None:
+        self.assertEqual(list(V8_5_4_CONFIG_PAGE_ACTIONS), ["开始计算"])
+        self.assertNotIn("去系统设置", V8_5_4_CONFIG_PAGE_ACTIONS)
+        self.assertNotIn("去系统设置修改", V8_5_4_CONFIG_PAGE_ACTIONS)
 
     def test_show_workflow_step_updates_active_state_and_raises_page(self) -> None:
         app = ExpressFeeApp.__new__(ExpressFeeApp)

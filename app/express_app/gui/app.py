@@ -66,16 +66,19 @@ V8_3_1_BALANCE_FOOTER_ACTIONS = (
     ("打开客户目录", "Secondary.TButton"),
     ("打开历史汇总表", "Secondary.TButton"),
 )
+WORKBENCH_LABEL_FONT_SIZE = 12
+SIDEBAR_BOTTOM_ACTIONS = ("系统设置", "打开客户目录")
+V8_5_4_CONFIG_PAGE_ACTIONS = ("开始计算",)
 V8_4_PRICE_TEMPLATE_ACTIONS = ("同步快递报价表", "业务员", "搜索")
 V8_4_PRICE_TEMPLATE_COLUMN_IDS = (
-    "index",
-    "excel_row",
-    "province",
-    "first_price",
-    "extra_price",
-    "status",
+    "province_left",
+    "first_price_left",
+    "extra_price_left",
+    "province_right",
+    "first_price_right",
+    "extra_price_right",
 )
-V8_4_PRICE_TEMPLATE_COLUMNS = ("序号", "Excel行号", "省份", "首重费用", "续重费用", "状态")
+V8_4_PRICE_TEMPLATE_COLUMNS = ("省份", "首重费用", "续重费用", "省份", "首重费用", "续重费用")
 SETTINGS_TOP_TAB_STYLE = "SettingsTop.TNotebook"
 PRICE_PREVIEW_COMBO_STYLE = "PricePreview.TCombobox"
 PRICE_PREVIEW_NOTEBOOK_STYLE = "PricePreview.TNotebook"
@@ -475,6 +478,7 @@ class ExpressFeeApp(tk.Tk):
         self.price_template_selected_sheet = ""
         self.price_template_sheet_tabs: list[str] = []
         self.price_template_rows_by_sheet: dict[str, list[tuple[str, ...]]] = {}
+        self.price_template_record_counts_by_sheet: dict[str, int] = {}
         self.price_template_combo: ttk.Combobox | None = None
         self.price_template_notebook: ttk.Notebook | None = None
         self.price_template_trees: dict[str, ttk.Treeview] = {}
@@ -816,7 +820,7 @@ class ExpressFeeApp(tk.Tk):
             text="工作台",
             background=COLORS["sidebar"],
             foreground=COLORS["muted"],
-            font=("Helvetica Neue", 10, "bold"),
+            font=("Helvetica Neue", WORKBENCH_LABEL_FONT_SIZE, "bold"),
         ).pack(anchor="w", padx=8, pady=(0, 8))
         for index, item in enumerate(V8_1_MAIN_NAV_ITEMS):
             enabled = item in V8_4_ENABLED_NAV_ITEMS
@@ -838,12 +842,6 @@ class ExpressFeeApp(tk.Tk):
             sidebar,
             text="系统设置",
             command=self._open_rule_config,
-            style="Secondary.TButton",
-        ).pack(fill=tk.X, pady=(0, 8))
-        ttk.Button(
-            sidebar,
-            text="打开输出目录",
-            command=self._open_output_dir,
             style="Secondary.TButton",
         ).pack(fill=tk.X, pady=(0, 8))
         ttk.Button(
@@ -982,12 +980,6 @@ class ExpressFeeApp(tk.Tk):
         self._directory_summary_row(settings_frame, 0, "报价表目录", self.price_dir_var)
         self._directory_summary_row(settings_frame, 1, "总结果目录", self.output_dir_var)
         self._directory_summary_row(settings_frame, 2, "客户明细目录", self.split_dir_var)
-        ttk.Button(
-            settings_frame,
-            text="去系统设置修改",
-            command=lambda: self._show_page("系统设置"),
-            style="Secondary.TButton",
-        ).grid(row=3, column=0, columnspan=2, sticky="e", pady=(10, 0))
 
         options_frame = ttk.LabelFrame(
             content,
@@ -1015,12 +1007,6 @@ class ExpressFeeApp(tk.Tk):
 
         config_actions = ttk.Frame(content, style="Content.TFrame")
         config_actions.grid(row=3, column=0, sticky="ew", pady=(12, 0))
-        ttk.Button(
-            config_actions,
-            text="去系统设置",
-            command=lambda: self._show_page("系统设置"),
-            style="Secondary.TButton",
-        ).pack(side=tk.LEFT)
         run_button = ttk.Button(
             config_actions,
             text="开始计算",
@@ -1754,6 +1740,7 @@ class ExpressFeeApp(tk.Tk):
         self.price_template_workbook = None
         self.price_template_sheet_tabs = []
         self.price_template_rows_by_sheet = {}
+        self.price_template_record_counts_by_sheet = {}
         self.price_template_selected_sheet = ""
         self.price_template_summary_var.set("选择业务员后，客户报价会按快递公司分标签展示。")
         notebook = self.__dict__.get("price_template_notebook")
@@ -1767,20 +1754,12 @@ class ExpressFeeApp(tk.Tk):
         self.price_template_workbook = workbook
         self.price_template_sheet_tabs = [sheet.sheet_name for sheet in workbook.sheets]
         self.price_template_rows_by_sheet = {
-            sheet.sheet_name: [
-                (
-                    str(index),
-                    str(row.row_number),
-                    row.province,
-                    self._format_template_price(row.first_price),
-                    self._format_template_price(row.extra_price),
-                    "正常" if row.province else "缺省份",
-                )
-                for index, row in enumerate(sheet.rows, start=1)
-            ]
-            for sheet in workbook.sheets
+            sheet.sheet_name: self._pair_price_template_rows(sheet.rows) for sheet in workbook.sheets
         }
-        total_rows = sum(len(rows) for rows in self.price_template_rows_by_sheet.values())
+        self.price_template_record_counts_by_sheet = {
+            sheet.sheet_name: len(sheet.rows) for sheet in workbook.sheets
+        }
+        total_rows = sum(self.price_template_record_counts_by_sheet.values())
         self.price_template_summary_var.set(
             f"客户：{workbook.customer}    报价文件：{workbook.price_file.name}    "
             f"{len(workbook.sheets)} 个快递公司    省份记录：{total_rows} 条"
@@ -1801,12 +1780,12 @@ class ExpressFeeApp(tk.Tk):
                 )
                 for column_id, label in zip(tree["columns"], V8_4_PRICE_TEMPLATE_COLUMNS):
                     tree.heading(column_id, text=label)
-                tree.column("index", width=70, minwidth=60, stretch=False, anchor=tk.CENTER)
-                tree.column("excel_row", width=90, minwidth=76, stretch=False, anchor=tk.CENTER)
-                tree.column("province", width=160, minwidth=120, stretch=True)
-                tree.column("first_price", width=110, minwidth=90, stretch=False, anchor=tk.E)
-                tree.column("extra_price", width=110, minwidth=90, stretch=False, anchor=tk.E)
-                tree.column("status", width=90, minwidth=80, stretch=False, anchor=tk.CENTER)
+                tree.column("province_left", width=160, minwidth=120, stretch=True)
+                tree.column("first_price_left", width=110, minwidth=90, stretch=False, anchor=tk.E)
+                tree.column("extra_price_left", width=110, minwidth=90, stretch=False, anchor=tk.E)
+                tree.column("province_right", width=160, minwidth=120, stretch=True)
+                tree.column("first_price_right", width=110, minwidth=90, stretch=False, anchor=tk.E)
+                tree.column("extra_price_right", width=110, minwidth=90, stretch=False, anchor=tk.E)
                 tree.grid(row=0, column=0, sticky="nsew")
                 scrollbar = ttk.Scrollbar(
                     tab_frame,
@@ -1835,8 +1814,24 @@ class ExpressFeeApp(tk.Tk):
         sheet_name = self.price_template_notebook.tab(self.price_template_notebook.select(), "text")
         self.price_template_selected_sheet = sheet_name
         customer = self.price_template_workbook.customer if self.price_template_workbook else ""
-        row_count = len(self.price_template_rows_by_sheet.get(sheet_name, []))
+        row_count = self.price_template_record_counts_by_sheet.get(sheet_name, 0)
         self.price_template_status_var.set(f"当前查看：{customer} / {sheet_name}，{row_count} 条省份价格。")
+
+    def _pair_price_template_rows(self, rows) -> list[tuple[str, str, str, str, str, str]]:
+        display_rows = [self._format_price_template_display_row(row) for row in rows]
+        paired_rows: list[tuple[str, str, str, str, str, str]] = []
+        for index in range(0, len(display_rows), 2):
+            left = display_rows[index]
+            right = display_rows[index + 1] if index + 1 < len(display_rows) else ("", "", "")
+            paired_rows.append(left + right)
+        return paired_rows
+
+    def _format_price_template_display_row(self, row) -> tuple[str, str, str]:
+        return (
+            row.province,
+            self._format_template_price(row.first_price),
+            self._format_template_price(row.extra_price),
+        )
 
     def _format_template_price(self, value: object) -> str:
         if isinstance(value, (int, float)) and not isinstance(value, bool):
