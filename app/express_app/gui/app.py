@@ -2001,10 +2001,6 @@ class ExpressFeeApp(tk.Tk):
             messagebox.showinfo("正在运行", "当前任务还在运行，请稍等。")
             return
 
-        config = self._build_config(require_output_access=False)
-        if config is None:
-            return
-
         self._clear_log()
         self._clear_results()
         self._reset_summary()
@@ -2013,10 +2009,18 @@ class ExpressFeeApp(tk.Tk):
         self._last_preflight_config_signature = None
         self.status_var.set("测试中")
         self._show_page("费用计算")
-        self._show_workflow_step("config")
+        self._show_workflow_step("run")
         self._set_preflight_buttons_state(tk.DISABLED)
         self._set_run_buttons_state(tk.DISABLED)
-        self._append_log("开始运行前测试：只检查输入数据和报价匹配，不生成任何结果文件。")
+        self._append_log("开始运行前测试：只检查目录、表头和关键字段，不生成任何结果文件。")
+
+        config = self._build_config(require_output_access=False)
+        if config is None:
+            self.status_var.set("测试未通过")
+            self._set_preflight_buttons_state(tk.NORMAL)
+            self._set_run_buttons_state(tk.DISABLED)
+            self._append_log("运行前测试未通过：请先补全配置，再重新点击“开始测试”。")
+            return
 
         self._worker = threading.Thread(
             target=self._run_preflight_worker,
@@ -2045,7 +2049,7 @@ class ExpressFeeApp(tk.Tk):
         self._last_preflight_config_signature = None
         self.status_var.set("测试未通过")
         self._set_run_buttons_state(tk.DISABLED)
-        self._show_workflow_step("config")
+        self._show_workflow_step("run")
 
     def _preflight_allows_run(self, config: ExpressFeeBatchJobConfig) -> bool:
         return (
@@ -2058,6 +2062,7 @@ class ExpressFeeApp(tk.Tk):
         rule_config = config.rule_config or build_default_rule_config()
         return (
             tuple(self._file_signature(path) for path in config.sales_files),
+            self._price_dir_signature(config.price_dir),
             str(config.price_dir.expanduser().resolve()),
             str(config.output_dir.expanduser().resolve()) if config.output_dir else "",
             str(config.split_dir.expanduser().resolve()) if config.split_dir else "",
@@ -2079,6 +2084,18 @@ class ExpressFeeApp(tk.Tk):
         except OSError:
             return (str(resolved_path), None, None)
         return (str(resolved_path), stat.st_mtime_ns, stat.st_size)
+
+    def _price_dir_signature(self, price_dir: Path) -> tuple[tuple[str, int | None, int | None], ...]:
+        resolved_dir = price_dir.expanduser().resolve()
+        try:
+            price_files = sorted(
+                path
+                for path in resolved_dir.glob("*.xlsx")
+                if not path.name.startswith("~$") and path.is_file()
+            )
+        except OSError:
+            return ((str(resolved_dir), None, None),)
+        return tuple(self._file_signature(path) for path in price_files)
 
     def _build_config(self, require_output_access: bool = True) -> ExpressFeeBatchJobConfig | None:
         sales_files = [path.expanduser() for path in self.sales_files]
@@ -2522,7 +2539,7 @@ class ExpressFeeApp(tk.Tk):
                 self._last_preflight_config_signature = None
                 self._set_preflight_buttons_state(tk.NORMAL)
                 self._set_run_buttons_state(tk.DISABLED)
-                self._show_workflow_step("config")
+                self._show_workflow_step("run")
                 messagebox.showerror("运行前测试失败", str(payload))
             elif kind == "done":
                 handled_terminal_event = True

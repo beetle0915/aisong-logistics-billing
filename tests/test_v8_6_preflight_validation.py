@@ -79,7 +79,53 @@ class V86PreflightValidationTest(unittest.TestCase):
             self.assertFalse((temp_dir / "output").exists())
             self.assertFalse((temp_dir / "split").exists())
 
-    def test_preflight_validation_blocks_bad_input_without_polluting_outputs(self) -> None:
+    def test_preflight_validation_is_lightweight_and_skips_full_price_matching(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_text:
+            temp_dir = Path(temp_dir_text)
+            sales_file = temp_dir / "销售出库单.xlsx"
+            price_dir = temp_dir / "prices"
+            price_dir.mkdir()
+            self._write_sales_file(
+                sales_file,
+                [["CK001", date(2026, 4, 7), "客户A", "顺丰", "浙江", 2.5]],
+            )
+            self._write_price_file(price_dir)
+
+            result = validate_express_fee_batch_job(self._config(temp_dir, sales_file, price_dir))
+
+            self.assertTrue(result.ok)
+            self.assertEqual(result.total_rows, 1)
+            self.assertEqual(result.success_rows, 1)
+            self.assertEqual(result.errors, [])
+            self.assertFalse((temp_dir / "output").exists())
+            self.assertFalse((temp_dir / "split").exists())
+
+    def test_preflight_validation_checks_template_exists_in_salesman_price_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_text:
+            temp_dir = Path(temp_dir_text)
+            sales_file = temp_dir / "销售出库单.xlsx"
+            price_dir = temp_dir / "prices"
+            price_dir.mkdir()
+            self._write_sales_file(
+                sales_file,
+                [["CK001", date(2026, 4, 7), "客户A", "申通", "浙江", 2.5]],
+            )
+            self._write_price_file(price_dir, salesman="客户A", sheets={"顺丰": [("广东", 10, 2)]})
+            self._write_price_file(price_dir, salesman="客户B", sheets={"申通": [("广东", 8, 1)]})
+
+            result = validate_express_fee_batch_job(self._config(temp_dir, sales_file, price_dir))
+
+            errors = "\n".join(result.errors)
+            self.assertFalse(result.ok)
+            self.assertEqual(result.total_rows, 1)
+            self.assertEqual(result.success_rows, 0)
+            self.assertEqual(result.failed_rows, 1)
+            self.assertIn("业务员报价表缺少计费模板", errors)
+            self.assertIn("客户A/申通", errors)
+            self.assertFalse((temp_dir / "output").exists())
+            self.assertFalse((temp_dir / "split").exists())
+
+    def test_preflight_validation_blocks_required_field_errors_without_polluting_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_text:
             temp_dir = Path(temp_dir_text)
             sales_file = temp_dir / "销售出库单.xlsx"
@@ -90,7 +136,8 @@ class V86PreflightValidationTest(unittest.TestCase):
                 [
                     ["CK001", date(2026, 4, 7), "客户A", "顺丰", "广东", "abc"],
                     ["CK002", date(2026, 4, 7), "客户B", "顺丰", "广东", 2],
-                    ["CK003", date(2026, 4, 7), "客户A", "顺丰", "广东", 20],
+                    ["CK003", None, "客户A", "顺丰", "广东", 2],
+                    ["", date(2026, 4, 7), "客户A", "顺丰", "广东", 2],
                 ],
             )
             self._write_price_file(price_dir)
@@ -99,14 +146,33 @@ class V86PreflightValidationTest(unittest.TestCase):
 
             errors = "\n".join(result.errors)
             self.assertFalse(result.ok)
-            self.assertEqual(result.total_rows, 3)
+            self.assertEqual(result.total_rows, 4)
             self.assertEqual(result.success_rows, 0)
-            self.assertEqual(result.failed_rows, 3)
+            self.assertEqual(result.failed_rows, 4)
             self.assertIn("重量原值：abc", errors)
             self.assertIn("业务员没有价格表：客户B", errors)
-            self.assertIn("缺少大件报价模板：顺丰_大件", errors)
+            self.assertIn("出库日期为空", errors)
+            self.assertIn("出库单号为空", errors)
             self.assertFalse((temp_dir / "output").exists())
             self.assertFalse((temp_dir / "split").exists())
+
+    def test_preflight_validation_uses_history_detail_key_date_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_text:
+            temp_dir = Path(temp_dir_text)
+            sales_file = temp_dir / "销售出库单.xlsx"
+            price_dir = temp_dir / "prices"
+            price_dir.mkdir()
+            self._write_sales_file(
+                sales_file,
+                [["CK001", "2026-04-07 无效文本", "客户A", "顺丰", "广东", 2]],
+            )
+            self._write_price_file(price_dir)
+
+            result = validate_express_fee_batch_job(self._config(temp_dir, sales_file, price_dir))
+
+            errors = "\n".join(result.errors)
+            self.assertFalse(result.ok)
+            self.assertIn("出库日期无法解析", errors)
 
     def test_preflight_validation_reports_non_positive_weight_before_price_lookup(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_text:

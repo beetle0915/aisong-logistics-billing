@@ -185,7 +185,7 @@ class V821WorkflowTest(unittest.TestCase):
         self.assertIs(app._last_preflight_result, result)
         self.assertIsNone(app._worker)
 
-    def test_preflight_failure_keeps_user_on_config_and_locks_calculation(self) -> None:
+    def test_preflight_failure_keeps_user_on_run_step_and_locks_calculation(self) -> None:
         app = ExpressFeeApp.__new__(ExpressFeeApp)
         config = object()
         result = ExpressFeePreflightResult(
@@ -205,10 +205,76 @@ class V821WorkflowTest(unittest.TestCase):
         app._apply_preflight_result(config, result)
 
         self.assertEqual(app.status_var.get(), "测试未通过")
-        self.assertEqual(app.shown_step, "config")
+        self.assertEqual(app.shown_step, "run")
         self.assertEqual(app.run_button_state, "disabled")
         self.assertIsNone(app._last_preflight_result)
         self.assertIn("重量原值：abc", "\n".join(app.logged))
+
+    def test_start_preflight_shows_run_step_so_user_can_watch_test_logs(self) -> None:
+        app = ExpressFeeApp.__new__(ExpressFeeApp)
+        config = ExpressFeeBatchJobConfig(
+            sales_files=[Path("/tmp/sales.xlsx")],
+            price_dir=Path("/tmp/prices"),
+            output_dir=Path("/tmp/output"),
+            split_dir=Path("/tmp/split"),
+        )
+        app._worker = None
+        app._build_config = lambda require_output_access=False: config  # type: ignore[method-assign]
+        app._clear_log = lambda: None  # type: ignore[method-assign]
+        app._clear_results = lambda: None  # type: ignore[method-assign]
+        app._reset_summary = lambda: None  # type: ignore[method-assign]
+        app._append_log = lambda message: app.logged.append(message)  # type: ignore[method-assign]
+        app._show_page = lambda page: setattr(app, "shown_page", page)  # type: ignore[method-assign]
+        app._show_workflow_step = lambda step: setattr(app, "shown_step", step)  # type: ignore[method-assign]
+        app._set_preflight_buttons_state = lambda state: setattr(app, "preflight_state", state)  # type: ignore[method-assign]
+        app._set_run_buttons_state = lambda state: setattr(app, "run_state", state)  # type: ignore[method-assign]
+        app.after = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+        app.status_var = FakeVar("就绪")
+        app.logged = []
+        started: list[bool] = []
+
+        class FakeThread:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def start(self) -> None:
+                started.append(True)
+
+        import express_app.gui.app as gui_app
+
+        original_thread = gui_app.threading.Thread
+        try:
+            gui_app.threading.Thread = FakeThread  # type: ignore[assignment]
+            app._start_preflight()
+        finally:
+            gui_app.threading.Thread = original_thread  # type: ignore[assignment]
+
+        self.assertEqual(app.shown_step, "run")
+        self.assertEqual(app.status_var.get(), "测试中")
+        self.assertEqual(app.run_state, "disabled")
+        self.assertTrue(started)
+
+    def test_start_preflight_config_error_still_shows_run_step_with_log(self) -> None:
+        app = ExpressFeeApp.__new__(ExpressFeeApp)
+        app._worker = None
+        app._build_config = lambda require_output_access=False: None  # type: ignore[method-assign]
+        app._clear_log = lambda: None  # type: ignore[method-assign]
+        app._clear_results = lambda: None  # type: ignore[method-assign]
+        app._reset_summary = lambda: None  # type: ignore[method-assign]
+        app._append_log = lambda message: app.logged.append(message)  # type: ignore[method-assign]
+        app._show_page = lambda page: setattr(app, "shown_page", page)  # type: ignore[method-assign]
+        app._show_workflow_step = lambda step: setattr(app, "shown_step", step)  # type: ignore[method-assign]
+        app._set_preflight_buttons_state = lambda state: setattr(app, "preflight_state", state)  # type: ignore[method-assign]
+        app._set_run_buttons_state = lambda state: setattr(app, "run_state", state)  # type: ignore[method-assign]
+        app.status_var = FakeVar("就绪")
+        app.logged = []
+
+        app._start_preflight()
+
+        self.assertEqual(app.shown_step, "run")
+        self.assertEqual(app.status_var.get(), "测试未通过")
+        self.assertEqual(app.run_state, "disabled")
+        self.assertIn("请先补全配置", "\n".join(app.logged))
 
     def test_preflight_signature_changes_when_sales_file_content_changes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_text:
@@ -224,6 +290,45 @@ class V821WorkflowTest(unittest.TestCase):
 
             before = app._config_signature(config)
             sales_file.write_text("after", encoding="utf-8")
+            after = app._config_signature(config)
+
+        self.assertNotEqual(before, after)
+
+    def test_preflight_signature_changes_when_price_file_content_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_text:
+            temp_dir = Path(temp_dir_text)
+            price_dir = temp_dir / "prices"
+            price_file = write_file(price_dir / "客户A-快递报价.xlsx", "before")
+            config = ExpressFeeBatchJobConfig(
+                sales_files=[temp_dir / "sales.xlsx"],
+                price_dir=price_dir,
+                output_dir=temp_dir / "output",
+                split_dir=temp_dir / "split",
+            )
+            app = ExpressFeeApp.__new__(ExpressFeeApp)
+
+            before = app._config_signature(config)
+            price_file.write_text("after price table", encoding="utf-8")
+            after = app._config_signature(config)
+
+        self.assertNotEqual(before, after)
+
+    def test_preflight_signature_changes_when_price_file_is_added(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_text:
+            temp_dir = Path(temp_dir_text)
+            price_dir = temp_dir / "prices"
+            price_dir.mkdir()
+            write_file(price_dir / "客户A-快递报价.xlsx", "before")
+            config = ExpressFeeBatchJobConfig(
+                sales_files=[temp_dir / "sales.xlsx"],
+                price_dir=price_dir,
+                output_dir=temp_dir / "output",
+                split_dir=temp_dir / "split",
+            )
+            app = ExpressFeeApp.__new__(ExpressFeeApp)
+
+            before = app._config_signature(config)
+            write_file(price_dir / "客户B-快递报价.xlsx", "new price table")
             after = app._config_signature(config)
 
         self.assertNotEqual(before, after)
