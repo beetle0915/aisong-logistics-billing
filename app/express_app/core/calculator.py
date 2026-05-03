@@ -35,6 +35,8 @@ from .models import (
     ExpressFeeBatchJobResult,
     ExpressFeeJobConfig,
     ExpressFeeJobResult,
+    ExpressFeePreflightFileResult,
+    ExpressFeePreflightResult,
     ExpressFeeRuleConfig,
 )
 
@@ -961,6 +963,8 @@ def process_sales_workbook(
             province = normalize_text(ws.cell(row=row, column=province_col).value)
             weight_value = ws.cell(row=row, column=weight_col).value
             weight = parse_number(weight_value, "重量")
+            if weight <= 0:
+                raise ValueError(f"重量必须大于0：{weight}")
             price_sheet_name = resolve_price_sheet_name(
                 express_company,
                 weight,
@@ -1079,6 +1083,260 @@ def process_sales_workbook(
         f"异常 {summary.failed_rows} 行",
     )
     return summary
+
+
+def validate_sales_workbook_for_calculation(
+    sales_file: Path,
+    price_map: dict[tuple[str, str, str], Price],
+    available_standard_companies: set[str],
+    rule_config: ExpressFeeRuleConfig,
+    progress_callback: ProgressCallback | None = None,
+) -> ExpressFeePreflightFileResult:
+    """Validate one sales workbook without writing any output files."""
+
+    workbook = openpyxl.load_workbook(sales_file, read_only=True, data_only=True)
+    ws = workbook.active
+    sales_headers = find_header_indexes(ws)
+    require_columns(
+        sales_headers,
+        REQUIRED_SALES_COLUMNS,
+        str(sales_file),
+        category="销售表结构错误",
+        stage="运行前验证",
+        suggestion="请恢复销售出库单表头，尤其是「出库日期」「业务员」「快递公司」「省」「重量」。",
+    )
+
+    total_rows = max(ws.max_row - 1, 0)
+    result = ExpressFeePreflightFileResult(sales_file=sales_file, total_rows=total_rows)
+    emit_progress(progress_callback, f"验证：开始检查 {sales_file.name}，共 {total_rows} 行")
+
+    salesman_col = sales_headers["业务员"]
+    raw_express_col = sales_headers[RAW_EXPRESS_COLUMN]
+    province_col = sales_headers["省"]
+    weight_col = sales_headers["重量"]
+
+    salesmen_with_price_files = {
+        salesman
+        for salesman, sheet_name, _province in price_map
+        if not sheet_name.endswith(rule_config.large_piece_suffix)
+    }
+
+    for row in range(2, ws.max_row + 1):
+        salesman = ""
+        raw_express_company = None
+        express_company = ""
+        province = ""
+        weight_value = None
+        weight: float | None = None
+        price_sheet_name = ""
+        try:
+            salesman = normalize_text(ws.cell(row=row, column=salesman_col).value)
+            raw_express_company = ws.cell(row=row, column=raw_express_col).value
+            express_company = parse_standard_express_company(
+                raw_express_company,
+                available_standard_companies,
+                rule_config,
+            )
+            province = normalize_text(ws.cell(row=row, column=province_col).value)
+            weight_value = ws.cell(row=row, column=weight_col).value
+            weight = parse_number(weight_value, "重量")
+            if weight <= 0:
+                raise ValueError(f"重量必须大于0：{weight}")
+            price_sheet_name = resolve_price_sheet_name(
+                express_company,
+                weight,
+                rule_config,
+            )
+
+            if not salesman:
+                raise ValueError("业务员为空")
+            if salesman not in salesmen_with_price_files:
+                raise ValueError(f"业务员没有价格表：{salesman}")
+            if not province:
+                raise ValueError("省为空")
+
+            key = (salesman, price_sheet_name, province)
+            price = price_map.get(key)
+            if price is None:
+                if (
+                    price_sheet_name.endswith(rule_config.large_piece_suffix)
+                    and (salesman, express_company, province) in price_map
+                ):
+                    reason = f"缺少大件报价模板：{price_sheet_name}"
+                    suggestion = (
+                        f"请在 {salesman} 的报价表中新增 sheet「{price_sheet_name}」，"
+                        f"并填写「{province}」的首重和续重价格。"
+                    )
+                else:
+                    reason = "找不到对应报价。"
+                    suggestion = (
+                        f"请检查 {salesman} 的报价表中是否存在 sheet「{price_sheet_name}」，"
+                        f"并确认其中有「{province}」的首重和续重价格。"
+                    )
+                raise ValueError(
+                    format_error_block(
+                        "报价表错误",
+                        reason,
+                        suggestion,
+                        stage="运行前验证",
+                        location=f"销售表 第 {row} 行",
+                        context={
+                            "业务员": salesman,
+                            "原始快递公司": raw_express_company,
+                            "标准快递公司": express_company,
+                            "计费模板": price_sheet_name,
+                            "省": province,
+                            "重量": weight,
+                        },
+                    )
+                )
+
+            calculate_fee(
+                weight,
+                price,
+                round_digits=2,
+                express_company=express_company,
+            )
+            result.success_rows += 1
+        except ValueError as exc:
+            message = str(exc)
+            if not message.startswith("["):
+                reason = message
+                suggestion = "请检查该行的业务员、快递公司、省和重量是否填写完整且格式正确。"
+                context = {
+                    "行号": row,
+                    "业务员": salesman,
+                    "原始快递公司": raw_express_company,
+                    "标准快递公司": express_company or "未识别",
+                    "计费模板": price_sheet_name or "未确定",
+                    "省": province,
+                    "重量原值": weight_value,
+                }
+                if reason.startswith("重量不是数字"):
+                    suggestion = "请将重量改为数字，例如 1、2.5、20。"
+                elif reason.startswith("重量为空"):
+                    suggestion = "请补充重量，重量必须是数字，例如 1、2.5、20。"
+                elif reason.startswith("重量必须大于0"):
+                    suggestion = "请将重量改为大于 0 的数字。"
+                elif reason.startswith("业务员没有价格表"):
+                    suggestion = "请为该业务员补充对应的「业务员-快递报价.xlsx」报价文件。"
+                elif "快递公司" in reason:
+                    suggestion = "请检查快递公司名称，或在规则配置中补充快递公司映射。"
+                elif reason == "业务员为空":
+                    suggestion = "请补充业务员，系统会用业务员匹配对应报价表。"
+                elif reason == "省为空":
+                    suggestion = "请补充省份，省份需要与报价表中的省份名称一致。"
+
+                message = format_error_block(
+                    "运行前验证错误",
+                    reason,
+                    suggestion,
+                    stage="运行前验证",
+                    location=f"销售表 第 {row} 行",
+                    context=context,
+                )
+            result.failed_rows += 1
+            result.errors.append(message)
+
+        processed_rows = row - 1
+        if should_emit_progress(processed_rows, result.total_rows, PROGRESS_ROW_INTERVAL):
+            emit_progress(
+                progress_callback,
+                "验证："
+                f"{sales_file.name} 已检查 {processed_rows}/{result.total_rows} 行，"
+                f"通过 {result.success_rows} 行，问题 {result.failed_rows} 行",
+            )
+
+    return result
+
+
+def validate_express_fee_batch_job(
+    config: ExpressFeeBatchJobConfig,
+    progress_callback: ProgressCallback | None = None,
+) -> ExpressFeePreflightResult:
+    """Validate batch inputs before the GUI writes calculation outputs."""
+
+    sales_files = [path.expanduser().resolve() for path in config.sales_files]
+    price_dir = config.price_dir.expanduser().resolve()
+    rule_config = normalize_rule_config(config.rule_config)
+    result = ExpressFeePreflightResult(sales_files=sales_files, price_dir=price_dir)
+
+    emit_progress(progress_callback, f"验证：开始运行前测试，共 {len(sales_files)} 个销售表")
+    try:
+        price_map = load_price_tables(price_dir)
+    except Exception as exc:
+        message = str(exc)
+        if not message.startswith("["):
+            message = format_error_block(
+                "运行前验证错误",
+                message,
+                "请检查报价目录和报价 Excel 文件后重新测试。",
+                stage="运行前验证",
+                location=str(price_dir),
+                system_error=exc.__class__.__name__,
+            )
+        result.errors.append(message)
+        result.logs.extend(result.errors)
+        return result
+
+    available_standard_companies = {
+        sheet_name
+        for _salesman, sheet_name, _province in price_map
+        if not sheet_name.endswith(rule_config.large_piece_suffix)
+    }
+    emit_progress(progress_callback, f"验证：报价读取完成，共 {len(price_map)} 条报价")
+
+    for index, sales_file in enumerate(sales_files, start=1):
+        emit_progress(
+            progress_callback,
+            f"验证：正在检查销售表 {index}/{len(sales_files)}：{sales_file.name}",
+        )
+        try:
+            file_result = validate_sales_workbook_for_calculation(
+                sales_file,
+                price_map,
+                available_standard_companies,
+                rule_config,
+                progress_callback,
+            )
+        except Exception as exc:
+            message = str(exc)
+            if not message.startswith("["):
+                message = format_error_block(
+                    "运行前验证错误",
+                    message,
+                    "请检查该销售出库单是否完整、可读取，表头是否符合要求。",
+                    stage="运行前验证",
+                    location=str(sales_file),
+                    system_error=exc.__class__.__name__,
+                )
+            file_result = ExpressFeePreflightFileResult(
+                sales_file=sales_file,
+                failed_rows=1,
+                errors=[message],
+            )
+        result.file_results.append(file_result)
+
+    result.errors.extend(
+        error
+        for file_result in result.file_results
+        for error in file_result.errors
+    )
+    if result.ok:
+        result.logs.append(
+            f"运行前测试通过：{len(result.file_results)} 个销售表，"
+            f"共 {result.total_rows} 行可计算。"
+        )
+        emit_progress(progress_callback, result.logs[-1])
+    else:
+        result.logs.append(
+            f"运行前测试未通过：{len(result.file_results)} 个销售表，"
+            f"共 {result.failed_rows} 个问题需要处理。"
+        )
+        result.logs.extend(result.errors)
+        emit_progress(progress_callback, result.logs[0])
+
+    return result
 
 
 def number_or_zero(value: Any) -> float:

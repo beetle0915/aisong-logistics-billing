@@ -115,3 +115,48 @@ class ExpressFeeBatchJobResult:
             and all(result.ok for result in self.job_results)
             and not self.history_errors
         )
+
+
+@dataclass
+class ExpressFeePreflightFileResult:
+    """Read-only validation result for one sales workbook."""
+
+    sales_file: Path
+    total_rows: int = 0
+    success_rows: int = 0
+    failed_rows: int = 0
+    errors: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return self.failed_rows == 0 and not self.errors
+
+
+@dataclass
+class ExpressFeePreflightResult:
+    """Read-only validation result for a batch before writing outputs."""
+
+    sales_files: list[Path]
+    price_dir: Path
+    file_results: list[ExpressFeePreflightFileResult] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    logs: list[str] = field(default_factory=list)
+
+    @property
+    def total_rows(self) -> int:
+        return sum(result.total_rows for result in self.file_results)
+
+    @property
+    def success_rows(self) -> int:
+        return sum(result.success_rows for result in self.file_results)
+
+    @property
+    def failed_rows(self) -> int:
+        file_failed_rows = sum(result.failed_rows for result in self.file_results)
+        if file_failed_rows:
+            return file_failed_rows
+        return len(self.errors)
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.file_results) and all(result.ok for result in self.file_results) and not self.errors

@@ -10,6 +10,7 @@ from .calculator import (
     run_express_fee_batch_job,
     run_express_fee_job,
     scan_price_template_catalog,
+    validate_express_fee_batch_job,
 )
 from .models import (
     ExpressCompanyKeywordRule,
@@ -17,6 +18,8 @@ from .models import (
     ExpressFeeBatchJobResult,
     ExpressFeeJobConfig,
     ExpressFeeJobResult,
+    ExpressFeePreflightFileResult,
+    ExpressFeePreflightResult,
     ExpressFeeRuleConfig,
 )
 
@@ -26,6 +29,8 @@ __all__ = [
     "ExpressFeeBatchJobResult",
     "ExpressFeeJobConfig",
     "ExpressFeeJobResult",
+    "ExpressFeePreflightFileResult",
+    "ExpressFeePreflightResult",
     "ExpressFeeRuleConfig",
     "PriceTemplateCatalog",
     "PriceTemplateRow",
@@ -36,4 +41,5 @@ __all__ = [
     "run_express_fee_batch_job",
     "run_express_fee_job",
     "scan_price_template_catalog",
+    "validate_express_fee_batch_job",
 ]

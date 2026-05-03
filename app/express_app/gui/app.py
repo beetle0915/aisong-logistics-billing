@@ -24,11 +24,13 @@ from express_app.core.calculator import (
     build_default_rule_config,
     load_price_template_workbook,
     scan_price_template_catalog,
+    validate_express_fee_batch_job,
 )
 from express_app.core.models import (
     ExpressCompanyKeywordRule,
     ExpressFeeBatchJobConfig,
     ExpressFeeBatchJobResult,
+    ExpressFeePreflightResult,
     ExpressFeeRuleConfig,
 )
 from express_app.core import run_express_fee_batch_job
@@ -68,7 +70,8 @@ V8_3_1_BALANCE_FOOTER_ACTIONS = (
 )
 WORKBENCH_LABEL_FONT_SIZE = 12
 SIDEBAR_BOTTOM_ACTIONS = ("系统设置", "打开客户目录")
-V8_5_4_CONFIG_PAGE_ACTIONS = ("开始计算",)
+V8_6_CONFIG_PAGE_ACTIONS = ("开始测试",)
+V8_6_RUN_PAGE_ACTIONS = ("开始计算",)
 V8_4_PRICE_TEMPLATE_ACTIONS = ("同步快递报价表", "业务员", "搜索", "打开快递价格表")
 V8_4_PRICE_TEMPLATE_COLUMN_IDS = (
     "province_left",
@@ -435,6 +438,8 @@ class ExpressFeeApp(tk.Tk):
         self._queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._worker: threading.Thread | None = None
         self._last_result: ExpressFeeBatchJobResult | None = None
+        self._last_preflight_result: ExpressFeePreflightResult | None = None
+        self._last_preflight_config_signature: tuple[object, ...] | None = None
         self.result_paths: dict[str, Path] = {}
 
         gui_config = load_gui_config()
@@ -465,6 +470,7 @@ class ExpressFeeApp(tk.Tk):
         self.nav_labels: dict[str, ttk.Label] = {}
         self.workflow_step_labels: dict[str, ttk.Label] = {}
         self.workflow_pages: dict[str, ttk.Frame] = {}
+        self.preflight_buttons: list[ttk.Button] = []
         self.run_buttons: list[ttk.Button] = []
         self.content_container: ttk.Frame | None = None
         self.fee_page: ttk.Frame | None = None
@@ -1023,14 +1029,14 @@ class ExpressFeeApp(tk.Tk):
 
         config_actions = ttk.Frame(content, style="Content.TFrame")
         config_actions.grid(row=3, column=0, sticky="ew", pady=(12, 0))
-        run_button = ttk.Button(
+        test_button = ttk.Button(
             config_actions,
-            text="开始计算",
-            command=self._start_job,
+            text="开始测试",
+            command=self._start_preflight,
             style="Primary.TButton",
         )
-        run_button.pack(side=tk.RIGHT)
-        self.run_buttons.append(run_button)
+        test_button.pack(side=tk.RIGHT)
+        self.preflight_buttons.append(test_button)
 
     def _build_fee_run_page(self, content: ttk.Frame) -> None:
         content.columnconfigure(0, weight=1)
@@ -1060,6 +1066,7 @@ class ExpressFeeApp(tk.Tk):
             text="开始计算",
             command=self._start_job,
             style="Primary.TButton",
+            state=tk.DISABLED,
         )
         run_button.grid(row=0, column=2, sticky="e")
         self.run_buttons.append(run_button)
@@ -1165,12 +1172,12 @@ class ExpressFeeApp(tk.Tk):
         )
         rerun_button = ttk.Button(
             result_actions,
-            text="重新运行",
-            command=self._start_job,
+            text="重新测试",
+            command=self._start_preflight,
             style="Primary.TButton",
         )
         rerun_button.pack(side=tk.RIGHT)
-        self.run_buttons.append(rerun_button)
+        self.preflight_buttons.append(rerun_button)
 
     def _build_settings_page(self, content: ttk.Frame) -> None:
         content.rowconfigure(0, weight=1)
@@ -1512,6 +1519,10 @@ class ExpressFeeApp(tk.Tk):
 
     def _set_run_buttons_state(self, state: str) -> None:
         for button in self.run_buttons:
+            button.configure(state=state)
+
+    def _set_preflight_buttons_state(self, state: str) -> None:
+        for button in self.__dict__.get("preflight_buttons", []):
             button.configure(state=state)
 
     def _traffic_lights(self, parent: ttk.Frame) -> ttk.Frame:
@@ -1954,8 +1965,14 @@ class ExpressFeeApp(tk.Tk):
             messagebox.showinfo("正在运行", "当前任务还在运行，请稍等。")
             return
 
-        config = self._build_config()
+        config = self._build_config(require_output_access=True)
         if config is None:
+            return
+        if not self._preflight_allows_run(config):
+            self._set_run_buttons_state(tk.DISABLED)
+            self._show_page("费用计算")
+            self._show_workflow_step("config")
+            messagebox.showwarning("请先开始测试", "请先点击“开始测试”，测试通过后再开始计算。")
             return
         self._save_current_config()
 
@@ -1966,6 +1983,7 @@ class ExpressFeeApp(tk.Tk):
         self.status_var.set("运行中")
         self._show_page("费用计算")
         self._show_workflow_step(V8_2_1_AUTO_WORKFLOW_TRANSITIONS["on_start"])
+        self._set_preflight_buttons_state(tk.DISABLED)
         self._set_run_buttons_state(tk.DISABLED)
         self._last_result = None
 
@@ -1977,7 +1995,92 @@ class ExpressFeeApp(tk.Tk):
         self._worker.start()
         self.after(100, self._poll_queue)
 
-    def _build_config(self) -> ExpressFeeBatchJobConfig | None:
+    def _start_preflight(self) -> None:
+        if self._worker and self._worker.is_alive():
+            self._show_workflow_step("run")
+            messagebox.showinfo("正在运行", "当前任务还在运行，请稍等。")
+            return
+
+        config = self._build_config(require_output_access=False)
+        if config is None:
+            return
+
+        self._clear_log()
+        self._clear_results()
+        self._reset_summary()
+        self._last_result = None
+        self._last_preflight_result = None
+        self._last_preflight_config_signature = None
+        self.status_var.set("测试中")
+        self._show_page("费用计算")
+        self._show_workflow_step("config")
+        self._set_preflight_buttons_state(tk.DISABLED)
+        self._set_run_buttons_state(tk.DISABLED)
+        self._append_log("开始运行前测试：只检查输入数据和报价匹配，不生成任何结果文件。")
+
+        self._worker = threading.Thread(
+            target=self._run_preflight_worker,
+            args=(config,),
+            daemon=True,
+        )
+        self._worker.start()
+        self.after(100, self._poll_queue)
+
+    def _apply_preflight_result(
+        self,
+        config: ExpressFeeBatchJobConfig,
+        result: ExpressFeePreflightResult,
+    ) -> None:
+        logs = result.logs or ["运行前测试没有返回详细信息。"]
+        self._append_log("\n".join(self._format_customer_error_line(line) for line in logs))
+        if result.ok:
+            self._last_preflight_result = result
+            self._last_preflight_config_signature = self._config_signature(config)
+            self.status_var.set("测试通过，等待开始计算")
+            self._set_run_buttons_state(tk.NORMAL)
+            self._show_workflow_step("run")
+            return
+
+        self._last_preflight_result = None
+        self._last_preflight_config_signature = None
+        self.status_var.set("测试未通过")
+        self._set_run_buttons_state(tk.DISABLED)
+        self._show_workflow_step("config")
+
+    def _preflight_allows_run(self, config: ExpressFeeBatchJobConfig) -> bool:
+        return (
+            self._last_preflight_result is not None
+            and self._last_preflight_result.ok
+            and self._last_preflight_config_signature == self._config_signature(config)
+        )
+
+    def _config_signature(self, config: ExpressFeeBatchJobConfig) -> tuple[object, ...]:
+        rule_config = config.rule_config or build_default_rule_config()
+        return (
+            tuple(self._file_signature(path) for path in config.sales_files),
+            str(config.price_dir.expanduser().resolve()),
+            str(config.output_dir.expanduser().resolve()) if config.output_dir else "",
+            str(config.split_dir.expanduser().resolve()) if config.split_dir else "",
+            config.round_digits,
+            config.split_customer_daily_files,
+            config.generate_customer_history,
+            config.refresh_all_customers,
+            tuple(sorted(rule_config.exact_company_map.items())),
+            tuple((item.keyword, item.standard_name) for item in rule_config.keyword_company_rules),
+            tuple(sorted(rule_config.large_piece_companies)),
+            rule_config.large_piece_threshold_kg,
+            rule_config.large_piece_suffix,
+        )
+
+    def _file_signature(self, path: Path) -> tuple[str, int | None, int | None]:
+        resolved_path = path.expanduser().resolve()
+        try:
+            stat = resolved_path.stat()
+        except OSError:
+            return (str(resolved_path), None, None)
+        return (str(resolved_path), stat.st_mtime_ns, stat.st_size)
+
+    def _build_config(self, require_output_access: bool = True) -> ExpressFeeBatchJobConfig | None:
         sales_files = [path.expanduser() for path in self.sales_files]
         price_dir_text = self.price_dir_var.get().strip()
         output_dir_text = self.output_dir_var.get().strip()
@@ -2006,18 +2109,19 @@ class ExpressFeeApp(tk.Tk):
         if not output_dir_text:
             messagebox.showerror("路径错误", "请选择总结果目录。")
             return None
-        output_dir = self._ensure_writable_dir_access(
-            output_dir,
-            "总结果目录",
-            "重新选择总结果目录",
-            self.output_dir_var,
-        )
-        if output_dir is None:
-            return None
-        if self.split_var.get() and not split_dir_text:
+        if require_output_access:
+            output_dir = self._ensure_writable_dir_access(
+                output_dir,
+                "总结果目录",
+                "重新选择总结果目录",
+                self.output_dir_var,
+            )
+            if output_dir is None:
+                return None
+        if (self.split_var.get() or self.history_var.get()) and not split_dir_text:
             messagebox.showerror("路径错误", "请选择客户每日明细目录。")
             return None
-        if (self.split_var.get() or self.history_var.get()) and split_dir_text:
+        if require_output_access and (self.split_var.get() or self.history_var.get()) and split_dir_text:
             split_dir = self._ensure_writable_dir_access(
                 split_dir,
                 "客户每日明细目录",
@@ -2380,6 +2484,19 @@ class ExpressFeeApp(tk.Tk):
         else:
             self._queue.put(("done", result))
 
+    def _run_preflight_worker(self, config: ExpressFeeBatchJobConfig) -> None:
+        try:
+            result = validate_express_fee_batch_job(
+                config,
+                progress_callback=lambda message: self._queue.put(
+                    ("log", self._format_customer_error_line(message))
+                ),
+            )
+        except Exception as exc:  # GUI boundary: show unexpected errors to user.
+            self._queue.put(("preflight_error", exc))
+        else:
+            self._queue.put(("preflight_done", (config, result)))
+
     def _poll_queue(self) -> None:
         handled_terminal_event = False
         while True:
@@ -2390,6 +2507,23 @@ class ExpressFeeApp(tk.Tk):
 
             if kind == "log":
                 self._append_log(str(payload))
+            elif kind == "preflight_done":
+                handled_terminal_event = True
+                config, result = payload
+                assert isinstance(config, ExpressFeeBatchJobConfig)
+                assert isinstance(result, ExpressFeePreflightResult)
+                self._apply_preflight_result(config, result)
+                self._set_preflight_buttons_state(tk.NORMAL)
+            elif kind == "preflight_error":
+                handled_terminal_event = True
+                self._append_log(f"运行前测试失败：{payload}")
+                self.status_var.set("测试失败")
+                self._last_preflight_result = None
+                self._last_preflight_config_signature = None
+                self._set_preflight_buttons_state(tk.NORMAL)
+                self._set_run_buttons_state(tk.DISABLED)
+                self._show_workflow_step("config")
+                messagebox.showerror("运行前测试失败", str(payload))
             elif kind == "done":
                 handled_terminal_event = True
                 result = payload
@@ -2399,6 +2533,7 @@ class ExpressFeeApp(tk.Tk):
                 self._populate_result_table(result)
                 self._update_summary(result)
                 self.status_var.set("完成" if result.ok else "完成，有错误")
+                self._set_preflight_buttons_state(tk.NORMAL)
                 self._set_run_buttons_state(tk.NORMAL)
                 self._show_workflow_step(V8_2_1_AUTO_WORKFLOW_TRANSITIONS["on_done"])
                 if result.ok:
@@ -2409,6 +2544,7 @@ class ExpressFeeApp(tk.Tk):
                 handled_terminal_event = True
                 self._append_log(f"运行失败：{payload}")
                 self.status_var.set("失败")
+                self._set_preflight_buttons_state(tk.NORMAL)
                 self._set_run_buttons_state(tk.NORMAL)
                 self._show_workflow_step("run")
                 messagebox.showerror("运行失败", str(payload))
