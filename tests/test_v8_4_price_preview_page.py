@@ -56,6 +56,8 @@ class V84PricePreviewPageTest(unittest.TestCase):
         sf.append(["省份参照列", "首重费用", "续重费用"])
         sf.append(["上海市", 6.5, 0.9])
         sf.append(["广东省", 6.9, 1.6])
+        sf.append(["浙江省", 7.2, 1.3])
+        sf.append(["江苏省", 7.5, 1.5])
         st = workbook.create_sheet("申通")
         st.append(["省份参照列", "首重费用", "续重费用"])
         st.append(["上海市", 3, 1])
@@ -74,6 +76,7 @@ class V84PricePreviewPageTest(unittest.TestCase):
         app.price_template_sheet_tabs = []
         app.price_template_rows_by_sheet = {}
         app.price_template_trees = {}
+        app.price_template_current_file = None
         return app
 
     def test_price_preview_navigation_is_enabled(self) -> None:
@@ -82,7 +85,7 @@ class V84PricePreviewPageTest(unittest.TestCase):
     def test_price_template_viewer_fields_match_v8_4_design(self) -> None:
         self.assertEqual(
             list(gui_app.V8_4_PRICE_TEMPLATE_ACTIONS),
-            ["同步快递报价表", "业务员", "搜索"],
+            ["同步快递报价表", "业务员", "搜索", "打开快递价格表"],
         )
         self.assertEqual(
             list(gui_app.V8_4_PRICE_TEMPLATE_COLUMNS),
@@ -161,12 +164,17 @@ class V84PricePreviewPageTest(unittest.TestCase):
             self.assertEqual(app.price_template_selected_sheet, "顺丰")
             self.assertEqual(
                 app.price_template_rows_by_sheet["顺丰"][0],
-                ("上海市", "¥6.50", "¥0.90", "广东省", "¥6.90", "¥1.60"),
+                ("上海市", "¥6.50", "¥0.90", "浙江省", "¥7.20", "¥1.30"),
+            )
+            self.assertEqual(
+                app.price_template_rows_by_sheet["顺丰"][1],
+                ("广东省", "¥6.90", "¥1.60", "江苏省", "¥7.50", "¥1.50"),
             )
             self.assertEqual(
                 app.price_template_rows_by_sheet["申通"][0],
                 ("上海市", "¥3.00", "¥1.00", "", "", ""),
             )
+            self.assertEqual(app.price_template_current_file, price_dir / "客户A-快递报价.xlsx")
             self.assertIn("客户A", app.price_template_summary_var.get())
             self.assertIn("2 个快递公司", app.price_template_summary_var.get())
 

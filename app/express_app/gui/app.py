@@ -69,7 +69,7 @@ V8_3_1_BALANCE_FOOTER_ACTIONS = (
 WORKBENCH_LABEL_FONT_SIZE = 12
 SIDEBAR_BOTTOM_ACTIONS = ("系统设置", "打开客户目录")
 V8_5_4_CONFIG_PAGE_ACTIONS = ("开始计算",)
-V8_4_PRICE_TEMPLATE_ACTIONS = ("同步快递报价表", "业务员", "搜索")
+V8_4_PRICE_TEMPLATE_ACTIONS = ("同步快递报价表", "业务员", "搜索", "打开快递价格表")
 V8_4_PRICE_TEMPLATE_COLUMN_IDS = (
     "province_left",
     "first_price_left",
@@ -485,6 +485,7 @@ class ExpressFeeApp(tk.Tk):
         self.price_template_summary_var = tk.StringVar(value="选择业务员后，客户报价会按快递公司分标签展示。")
         self.price_template_catalog = None
         self.price_template_workbook = None
+        self.price_template_current_file: Path | None = None
         self.price_template_customers: list[str] = []
         self.price_template_selected_sheet = ""
         self.price_template_sheet_tabs: list[str] = []
@@ -1438,6 +1439,7 @@ class ExpressFeeApp(tk.Tk):
         viewer_frame.grid(row=1, column=0, sticky="nsew")
         viewer_frame.rowconfigure(1, weight=1)
         viewer_frame.columnconfigure(0, weight=1)
+        viewer_frame.columnconfigure(1, weight=0)
         ttk.Label(
             viewer_frame,
             textvariable=self.price_template_summary_var,
@@ -1445,11 +1447,17 @@ class ExpressFeeApp(tk.Tk):
             foreground=COLORS["muted"],
             wraplength=760,
         ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ttk.Button(
+            viewer_frame,
+            text="打开快递价格表",
+            command=self._open_current_price_template,
+            style="Secondary.TButton",
+        ).grid(row=0, column=1, sticky="e", padx=(12, 0), pady=(0, 8))
         self.price_template_notebook = ttk.Notebook(
             viewer_frame,
             style=PRICE_PREVIEW_NOTEBOOK_STYLE,
         )
-        self.price_template_notebook.grid(row=1, column=0, sticky="nsew")
+        self.price_template_notebook.grid(row=1, column=0, columnspan=2, sticky="nsew")
         self.price_template_notebook.bind(
             "<<NotebookTabChanged>>",
             lambda _event: self._on_price_template_tab_changed(),
@@ -1460,7 +1468,7 @@ class ExpressFeeApp(tk.Tk):
             background=COLORS["surface"],
             foreground=COLORS["muted"],
             wraplength=760,
-        ).grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        ).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
     def _show_page(self, nav_item: str) -> None:
         if nav_item not in V8_4_ENABLED_NAV_ITEMS:
@@ -1746,6 +1754,16 @@ class ExpressFeeApp(tk.Tk):
                 return summary
         return None
 
+    def _open_current_price_template(self) -> None:
+        path = self.price_template_current_file
+        if path is None:
+            messagebox.showinfo("未选择报价表", "请先选择业务员并点击搜索。")
+            return
+        if not path.exists():
+            messagebox.showwarning("文件不存在", f"快递价格表不存在：\n{path}")
+            return
+        self._open_existing_path(path)
+
     def _configure_price_template_combo(self) -> None:
         combo = self.__dict__.get("price_template_combo")
         if combo is not None:
@@ -1753,6 +1771,7 @@ class ExpressFeeApp(tk.Tk):
 
     def _clear_price_template_view(self) -> None:
         self.price_template_workbook = None
+        self.price_template_current_file = None
         self.price_template_sheet_tabs = []
         self.price_template_rows_by_sheet = {}
         self.price_template_record_counts_by_sheet = {}
@@ -1767,6 +1786,7 @@ class ExpressFeeApp(tk.Tk):
     def _apply_price_template_workbook(self, workbook) -> None:
         self._clear_price_template_view()
         self.price_template_workbook = workbook
+        self.price_template_current_file = workbook.price_file
         self.price_template_sheet_tabs = [sheet.sheet_name for sheet in workbook.sheets]
         self.price_template_rows_by_sheet = {
             sheet.sheet_name: self._pair_price_template_rows(sheet.rows) for sheet in workbook.sheets
@@ -1906,10 +1926,12 @@ class ExpressFeeApp(tk.Tk):
 
     def _pair_price_template_rows(self, rows) -> list[tuple[str, str, str, str, str, str]]:
         display_rows = [self._format_price_template_display_row(row) for row in rows]
+        split_index = (len(display_rows) + 1) // 2
+        left_rows = display_rows[:split_index]
+        right_rows = display_rows[split_index:]
         paired_rows: list[tuple[str, str, str, str, str, str]] = []
-        for index in range(0, len(display_rows), 2):
-            left = display_rows[index]
-            right = display_rows[index + 1] if index + 1 < len(display_rows) else ("", "", "")
+        for index, left in enumerate(left_rows):
+            right = right_rows[index] if index < len(right_rows) else ("", "", "")
             paired_rows.append(left + right)
         return paired_rows
 
