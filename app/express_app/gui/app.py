@@ -86,6 +86,17 @@ PRICE_PREVIEW_TAB_PADDING = (18, 10)
 PRICE_PREVIEW_TAB_EXPAND = (0, 0, 0, 0)
 PRICE_PREVIEW_TREE_STYLE = "PricePreview.Treeview"
 PRICE_PREVIEW_SCROLLBAR_STYLE = "PricePreview.Vertical.TScrollbar"
+PRICE_PREVIEW_TREE_COLUMN_WIDTHS = {
+    "province_left": 120,
+    "first_price_left": 120,
+    "extra_price_left": 120,
+    "province_right": 120,
+    "first_price_right": 120,
+    "extra_price_right": 120,
+}
+PRICE_PREVIEW_TREE_CELL_ANCHOR = "center"
+PRICE_PREVIEW_GROUP_DIVIDER_WIDTH = 2
+PRICE_PREVIEW_GROUP_DIVIDER_COLOR = GUI_COLORS["border2"]
 OPTION_SELECTED_PREFIX = "✅"
 OPTION_UNSELECTED_PREFIX = "□"
 RULE_WINDOW_TITLE = "快递识别与大件规则"
@@ -743,6 +754,10 @@ class ExpressFeeApp(tk.Tk):
             rowheight=34,
             bordercolor=COLORS["border"],
             font=(font_family, 11),
+        )
+        style.configure(
+            "PricePreviewDivider.TFrame",
+            background=PRICE_PREVIEW_GROUP_DIVIDER_COLOR,
         )
         style.configure(
             f"{PRICE_PREVIEW_TREE_STYLE}.Heading",
@@ -1771,32 +1786,80 @@ class ExpressFeeApp(tk.Tk):
                 tab_frame = ttk.Frame(notebook, style="Surface.TFrame")
                 tab_frame.rowconfigure(0, weight=1)
                 tab_frame.columnconfigure(0, weight=1)
+                tab_frame.columnconfigure(2, weight=1)
                 tree = ttk.Treeview(
                     tab_frame,
-                    columns=V8_4_PRICE_TEMPLATE_COLUMN_IDS,
+                    columns=V8_4_PRICE_TEMPLATE_COLUMN_IDS[:3],
                     show="headings",
                     height=12,
                     style=PRICE_PREVIEW_TREE_STYLE,
                 )
                 for column_id, label in zip(tree["columns"], V8_4_PRICE_TEMPLATE_COLUMNS):
                     tree.heading(column_id, text=label)
-                tree.column("province_left", width=160, minwidth=120, stretch=True)
-                tree.column("first_price_left", width=110, minwidth=90, stretch=False, anchor=tk.E)
-                tree.column("extra_price_left", width=110, minwidth=90, stretch=False, anchor=tk.E)
-                tree.column("province_right", width=160, minwidth=120, stretch=True)
-                tree.column("first_price_right", width=110, minwidth=90, stretch=False, anchor=tk.E)
-                tree.column("extra_price_right", width=110, minwidth=90, stretch=False, anchor=tk.E)
+                self._configure_price_preview_tree_columns(tree, V8_4_PRICE_TEMPLATE_COLUMN_IDS[:3])
                 tree.grid(row=0, column=0, sticky="nsew")
+                divider = ttk.Frame(
+                    tab_frame,
+                    width=PRICE_PREVIEW_GROUP_DIVIDER_WIDTH,
+                    style="PricePreviewDivider.TFrame",
+                )
+                divider.grid(row=0, column=1, sticky="ns", padx=8)
+                right_tree = ttk.Treeview(
+                    tab_frame,
+                    columns=V8_4_PRICE_TEMPLATE_COLUMN_IDS[3:],
+                    show="headings",
+                    height=12,
+                    style=PRICE_PREVIEW_TREE_STYLE,
+                )
+                for column_id, label in zip(
+                    right_tree["columns"],
+                    V8_4_PRICE_TEMPLATE_COLUMNS[3:],
+                ):
+                    right_tree.heading(column_id, text=label)
+                self._configure_price_preview_tree_columns(
+                    right_tree,
+                    V8_4_PRICE_TEMPLATE_COLUMN_IDS[3:],
+                )
+                right_tree.grid(row=0, column=2, sticky="nsew")
+                tree.bind(
+                    "<MouseWheel>",
+                    lambda event, left=tree, right=right_tree: self._mousewheel_price_preview_trees(
+                        event,
+                        left,
+                        right,
+                    ),
+                )
+                right_tree.bind(
+                    "<MouseWheel>",
+                    lambda event, left=tree, right=right_tree: self._mousewheel_price_preview_trees(
+                        event,
+                        left,
+                        right,
+                    ),
+                )
                 scrollbar = ttk.Scrollbar(
                     tab_frame,
                     orient=tk.VERTICAL,
-                    command=tree.yview,
+                    command=lambda *args, left=tree, right=right_tree: self._yview_price_preview_trees(
+                        left,
+                        right,
+                        *args,
+                    ),
                     style=PRICE_PREVIEW_SCROLLBAR_STYLE,
                 )
-                scrollbar.grid(row=0, column=1, sticky="ns", padx=(8, 0))
-                tree.configure(yscrollcommand=scrollbar.set)
+                scrollbar.grid(row=0, column=3, sticky="ns", padx=(8, 0))
+                tree.configure(
+                    yscrollcommand=lambda first, last, linked=right_tree, bar=scrollbar: self._sync_price_preview_tree_scroll(
+                        linked,
+                        bar,
+                        first,
+                        last,
+                    )
+                )
+                right_tree.configure(yscrollcommand=scrollbar.set)
                 for values in self.price_template_rows_by_sheet[sheet.sheet_name]:
-                    tree.insert("", tk.END, values=values)
+                    tree.insert("", tk.END, values=values[:3])
+                    right_tree.insert("", tk.END, values=values[3:])
                 self.price_template_trees[sheet.sheet_name] = tree
                 notebook.add(tab_frame, text=sheet.sheet_name)
 
@@ -1816,6 +1879,30 @@ class ExpressFeeApp(tk.Tk):
         customer = self.price_template_workbook.customer if self.price_template_workbook else ""
         row_count = self.price_template_record_counts_by_sheet.get(sheet_name, 0)
         self.price_template_status_var.set(f"当前查看：{customer} / {sheet_name}，{row_count} 条省份价格。")
+
+    def _configure_price_preview_tree_columns(self, tree, column_ids: tuple[str, ...]) -> None:
+        for column_id in column_ids:
+            tree.column(
+                column_id,
+                width=PRICE_PREVIEW_TREE_COLUMN_WIDTHS[column_id],
+                minwidth=PRICE_PREVIEW_TREE_COLUMN_WIDTHS[column_id],
+                stretch=False,
+                anchor=PRICE_PREVIEW_TREE_CELL_ANCHOR,
+            )
+
+    def _yview_price_preview_trees(self, left_tree, right_tree, *args) -> None:
+        left_tree.yview(*args)
+        right_tree.yview(*args)
+
+    def _sync_price_preview_tree_scroll(self, linked_tree, scrollbar, first: str, last: str) -> None:
+        linked_tree.yview_moveto(first)
+        scrollbar.set(first, last)
+
+    def _mousewheel_price_preview_trees(self, event, left_tree, right_tree) -> str:
+        units = -1 if event.delta > 0 else 1
+        left_tree.yview_scroll(units, "units")
+        right_tree.yview_scroll(units, "units")
+        return "break"
 
     def _pair_price_template_rows(self, rows) -> list[tuple[str, str, str, str, str, str]]:
         display_rows = [self._format_price_template_display_row(row) for row in rows]

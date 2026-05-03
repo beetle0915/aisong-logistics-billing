@@ -110,6 +110,22 @@ class V84PricePreviewPageTest(unittest.TestCase):
         self.assertEqual(gui_app.PRICE_PREVIEW_TREE_STYLE, "PricePreview.Treeview")
         self.assertEqual(gui_app.PRICE_PREVIEW_SCROLLBAR_STYLE, "PricePreview.Vertical.TScrollbar")
 
+    def test_price_preview_columns_are_equal_width_centered_with_group_divider(self) -> None:
+        self.assertEqual(
+            gui_app.PRICE_PREVIEW_TREE_COLUMN_WIDTHS,
+            {
+                "province_left": 120,
+                "first_price_left": 120,
+                "extra_price_left": 120,
+                "province_right": 120,
+                "first_price_right": 120,
+                "extra_price_right": 120,
+            },
+        )
+        self.assertEqual(gui_app.PRICE_PREVIEW_TREE_CELL_ANCHOR, "center")
+        self.assertEqual(gui_app.PRICE_PREVIEW_GROUP_DIVIDER_WIDTH, 2)
+        self.assertEqual(gui_app.PRICE_PREVIEW_GROUP_DIVIDER_COLOR, gui_app.COLORS["border2"])
+
     def test_sync_price_templates_populates_customer_dropdown_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_text:
             price_dir = Path(temp_dir_text)
