@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import queue
 import re
+import os
 import subprocess
 import sys
 import threading
@@ -17,6 +18,7 @@ from express_app.core.account_balance import (
     CustomerBalanceRecord,
     collect_account_balance_dashboard,
 )
+from express_app.core.license_key import normalize_license_key, verify_license_key
 from express_app.core.calculator import (
     DEFAULT_OUTPUT_DIR,
     DEFAULT_PRICE_DIR,
@@ -40,6 +42,8 @@ from express_app.version import APP_DISPLAY_NAME, APP_VERSION_LABEL
 
 
 APP_TITLE = f"{APP_DISPLAY_NAME} {APP_VERSION_LABEL}"
+LICENSE_GATE_TITLE = "输入启动密钥"
+LICENSE_GATE_PROMPT = "请输入 5 分钟内有效的启动密钥"
 OUTPUT_VERSION_LABEL = APP_VERSION_LABEL
 V8_1_MAIN_NAV_ITEMS = (
     "费用计算",
@@ -427,6 +431,99 @@ class RuleConfigWindow(tk.Toplevel):
         return parse_ordered_mapping_text(text, source_name)
 
 
+class LicenseKeyDialog(tk.Toplevel):
+    def __init__(self, parent: tk.Tk) -> None:
+        super().__init__(parent)
+        self.title(LICENSE_GATE_TITLE)
+        self.resizable(False, False)
+        self.configure(bg=COLORS["surface"])
+        self.result = False
+
+        self.transient(parent)
+        self.grab_set()
+
+        root = ttk.Frame(self, style="Surface.TFrame", padding=(24, 22, 24, 18))
+        root.grid(row=0, column=0, sticky="nsew")
+        root.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            root,
+            text=APP_DISPLAY_NAME,
+            style="CardTitle.TLabel",
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            root,
+            text=LICENSE_GATE_PROMPT,
+            style="Muted.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(6, 14))
+
+        self.key_var = tk.StringVar()
+        self.entry = ttk.Entry(root, textvariable=self.key_var, width=24, justify="center")
+        self.entry.grid(row=2, column=0, sticky="ew")
+        self.entry.bind("<Return>", lambda _event: self._verify())
+
+        self.error_var = tk.StringVar(value="")
+        ttk.Label(
+            root,
+            textvariable=self.error_var,
+            style="Error.TLabel",
+        ).grid(row=3, column=0, sticky="w", pady=(8, 0))
+
+        button_row = ttk.Frame(root, style="Surface.TFrame")
+        button_row.grid(row=4, column=0, sticky="e", pady=(18, 0))
+        ttk.Button(
+            button_row,
+            text="取消",
+            style="Secondary.TButton",
+            command=self._cancel,
+        ).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(
+            button_row,
+            text="验证",
+            style="Primary.TButton",
+            command=self._verify,
+        ).grid(row=0, column=1)
+
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.after(50, self.entry.focus_set)
+        self.update_idletasks()
+        parent_x = parent.winfo_rootx()
+        parent_y = parent.winfo_rooty()
+        parent_width = parent.winfo_width()
+        parent_height = parent.winfo_height()
+        width = self.winfo_width()
+        height = self.winfo_height()
+        x = parent_x + max((parent_width - width) // 2, 0)
+        y = parent_y + max((parent_height - height) // 2, 0)
+        self.geometry(f"+{x}+{y}")
+
+    def _verify(self) -> None:
+        key = normalize_license_key(self.key_var.get())
+        if not key:
+            self.error_var.set("密钥格式不正确，应为 XXXX-XXXX。")
+            return
+        if not verify_license_key(key):
+            self.error_var.set("密钥无效或已过期，请重新复制最新密钥。")
+            return
+        self.result = True
+        self.destroy()
+
+    def _cancel(self) -> None:
+        self.result = False
+        self.destroy()
+
+
+def should_skip_license_gate(environ: dict[str, str] | None = None) -> bool:
+    env = os.environ if environ is None else environ
+    return env.get("EXPRESS_APP_SELF_CHECK") == "1" or env.get("EXPRESS_APP_DISABLE_LICENSE_GATE") == "1"
+
+
+def request_startup_license(parent: tk.Tk) -> bool:
+    dialog = LicenseKeyDialog(parent)
+    parent.wait_window(dialog)
+    return dialog.result
+
+
 class ExpressFeeApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -541,6 +638,18 @@ class ExpressFeeApp(tk.Tk):
             background=COLORS["surface"],
             foreground=COLORS["muted"],
             font=(mono_family, 10),
+        )
+        style.configure(
+            "Muted.TLabel",
+            background=COLORS["surface"],
+            foreground=COLORS["muted"],
+            font=(font_family, 11),
+        )
+        style.configure(
+            "Error.TLabel",
+            background=COLORS["surface"],
+            foreground=COLORS["danger"],
+            font=(font_family, 10),
         )
         style.configure(
             "Status.TLabel",
@@ -2647,6 +2756,12 @@ class ExpressFeeApp(tk.Tk):
 
 def main() -> None:
     app = ExpressFeeApp()
+    if not should_skip_license_gate():
+        app.withdraw()
+        if not request_startup_license(app):
+            app.destroy()
+            return
+        app.deiconify()
     app.mainloop()
 
 
