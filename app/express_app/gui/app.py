@@ -487,6 +487,8 @@ class LicenseKeyDialog(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self._cancel)
         self.after(50, self.entry.focus_set)
         self.update_idletasks()
+        self.lift()
+        self.focus_force()
         parent_x = parent.winfo_rootx()
         parent_y = parent.winfo_rooty()
         parent_width = parent.winfo_width()
@@ -522,6 +524,21 @@ def request_startup_license(parent: tk.Tk) -> bool:
     dialog = LicenseKeyDialog(parent)
     parent.wait_window(dialog)
     return dialog.result
+
+
+def run_startup_license_gate(
+    app: tk.Tk,
+    *,
+    environ: dict[str, str] | None = None,
+    request_license=request_startup_license,
+) -> bool:
+    if should_skip_license_gate(environ):
+        return True
+    app.update_idletasks()
+    if request_license(app):
+        return True
+    app.destroy()
+    return False
 
 
 class ExpressFeeApp(tk.Tk):
@@ -2756,12 +2773,8 @@ class ExpressFeeApp(tk.Tk):
 
 def main() -> None:
     app = ExpressFeeApp()
-    if not should_skip_license_gate():
-        app.withdraw()
-        if not request_startup_license(app):
-            app.destroy()
-            return
-        app.deiconify()
+    if not run_startup_license_gate(app):
+        return
     app.mainloop()
 
 

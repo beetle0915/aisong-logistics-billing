@@ -13,7 +13,7 @@ from express_app.core.license_key import (  # noqa: E402
     generate_license_key,
     verify_license_key,
 )
-from express_app.gui.app import should_skip_license_gate  # noqa: E402
+from express_app.gui.app import run_startup_license_gate, should_skip_license_gate  # noqa: E402
 
 
 class V88LicenseKeyTest(unittest.TestCase):
@@ -48,6 +48,55 @@ class V88LicenseKeyTest(unittest.TestCase):
         self.assertTrue(should_skip_license_gate({"EXPRESS_APP_SELF_CHECK": "1"}))
         self.assertTrue(should_skip_license_gate({"EXPRESS_APP_DISABLE_LICENSE_GATE": "1"}))
         self.assertFalse(should_skip_license_gate({}))
+
+    def test_startup_license_gate_keeps_main_window_visible_while_prompting(self) -> None:
+        class FakeApp:
+            def __init__(self) -> None:
+                self.withdraw_called = False
+                self.destroy_called = False
+
+            def withdraw(self) -> None:
+                self.withdraw_called = True
+
+            def destroy(self) -> None:
+                self.destroy_called = True
+
+            def update_idletasks(self) -> None:
+                pass
+
+        app = FakeApp()
+
+        allowed = run_startup_license_gate(
+            app,  # type: ignore[arg-type]
+            environ={},
+            request_license=lambda _app: True,
+        )
+
+        self.assertTrue(allowed)
+        self.assertFalse(app.withdraw_called)
+        self.assertFalse(app.destroy_called)
+
+    def test_startup_license_gate_closes_app_when_prompt_is_cancelled(self) -> None:
+        class FakeApp:
+            def __init__(self) -> None:
+                self.destroy_called = False
+
+            def destroy(self) -> None:
+                self.destroy_called = True
+
+            def update_idletasks(self) -> None:
+                pass
+
+        app = FakeApp()
+
+        allowed = run_startup_license_gate(
+            app,  # type: ignore[arg-type]
+            environ={},
+            request_license=lambda _app: False,
+        )
+
+        self.assertFalse(allowed)
+        self.assertTrue(app.destroy_called)
 
 
 if __name__ == "__main__":
