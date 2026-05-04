@@ -13,7 +13,12 @@ from express_app.core.license_key import (  # noqa: E402
     generate_license_key,
     verify_license_key,
 )
-from express_app.gui.app import run_startup_license_gate, should_skip_license_gate  # noqa: E402
+from express_app.gui.app import (
+    create_startup_lock_overlay,
+    remove_startup_lock_overlay,
+    run_startup_license_gate,
+    should_skip_license_gate,
+)  # noqa: E402
 
 
 class V88LicenseKeyTest(unittest.TestCase):
@@ -69,6 +74,8 @@ class V88LicenseKeyTest(unittest.TestCase):
         allowed = run_startup_license_gate(
             app,  # type: ignore[arg-type]
             environ={},
+            create_overlay=lambda _app: object(),
+            remove_overlay=lambda _overlay: None,
             request_license=lambda _app: True,
         )
 
@@ -92,11 +99,71 @@ class V88LicenseKeyTest(unittest.TestCase):
         allowed = run_startup_license_gate(
             app,  # type: ignore[arg-type]
             environ={},
+            create_overlay=lambda _app: object(),
+            remove_overlay=lambda _overlay: None,
             request_license=lambda _app: False,
         )
 
         self.assertFalse(allowed)
         self.assertTrue(app.destroy_called)
+
+    def test_startup_license_gate_creates_and_removes_lock_overlay(self) -> None:
+        class FakeOverlay:
+            def __init__(self) -> None:
+                self.destroy_called = False
+
+            def destroy(self) -> None:
+                self.destroy_called = True
+
+        class FakeApp:
+            def __init__(self) -> None:
+                self.overlay = FakeOverlay()
+                self.destroy_called = False
+
+            def destroy(self) -> None:
+                self.destroy_called = True
+
+            def update_idletasks(self) -> None:
+                pass
+
+        app = FakeApp()
+        created: list[FakeOverlay] = []
+
+        allowed = run_startup_license_gate(
+            app,  # type: ignore[arg-type]
+            environ={},
+            create_overlay=lambda _app: created.append(app.overlay) or app.overlay,
+            remove_overlay=lambda overlay: overlay.destroy(),
+            request_license=lambda _app: True,
+        )
+
+        self.assertTrue(allowed)
+        self.assertEqual(created, [app.overlay])
+        self.assertTrue(app.overlay.destroy_called)
+        self.assertFalse(app.destroy_called)
+
+    def test_lock_overlay_helpers_mark_app_state(self) -> None:
+        class FakeOverlay:
+            def __init__(self) -> None:
+                self.destroy_called = False
+
+            def destroy(self) -> None:
+                self.destroy_called = True
+
+        class FakeApp:
+            def __init__(self) -> None:
+                self.startup_lock_overlay = None
+
+        app = FakeApp()
+        overlay = FakeOverlay()
+
+        result = create_startup_lock_overlay(app, overlay_factory=lambda _app: overlay)
+        self.assertIs(result, overlay)
+        self.assertIs(app.startup_lock_overlay, overlay)
+
+        remove_startup_lock_overlay(app)
+        self.assertTrue(overlay.destroy_called)
+        self.assertIsNone(app.startup_lock_overlay)
 
 
 if __name__ == "__main__":

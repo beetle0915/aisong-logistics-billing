@@ -44,6 +44,7 @@ from express_app.version import APP_DISPLAY_NAME, APP_VERSION_LABEL
 APP_TITLE = f"{APP_DISPLAY_NAME} {APP_VERSION_LABEL}"
 LICENSE_GATE_TITLE = "输入启动密钥"
 LICENSE_GATE_PROMPT = "请输入 5 分钟内有效的启动密钥"
+STARTUP_LOCK_OVERLAY_COLOR = "#E8EEF6"
 OUTPUT_VERSION_LABEL = APP_VERSION_LABEL
 V8_1_MAIN_NAV_ITEMS = (
     "费用计算",
@@ -515,6 +516,30 @@ class LicenseKeyDialog(tk.Toplevel):
         self.destroy()
 
 
+class StartupLockOverlay(tk.Frame):
+    def __init__(self, parent: tk.Tk) -> None:
+        super().__init__(parent, bg=STARTUP_LOCK_OVERLAY_COLOR, highlightthickness=0)
+        self.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.lift()
+
+        panel = tk.Frame(self, bg=STARTUP_LOCK_OVERLAY_COLOR)
+        panel.place(relx=0.5, rely=0.46, anchor="center")
+        tk.Label(
+            panel,
+            text=APP_DISPLAY_NAME,
+            bg=STARTUP_LOCK_OVERLAY_COLOR,
+            fg=COLORS["primary_dark"],
+            font=("Helvetica Neue", 22, "bold"),
+        ).pack()
+        tk.Label(
+            panel,
+            text="主界面已锁定，请输入启动密钥",
+            bg=STARTUP_LOCK_OVERLAY_COLOR,
+            fg=COLORS["muted"],
+            font=("Helvetica Neue", 12),
+        ).pack(pady=(10, 0))
+
+
 def should_skip_license_gate(environ: dict[str, str] | None = None) -> bool:
     env = os.environ if environ is None else environ
     return env.get("EXPRESS_APP_SELF_CHECK") == "1" or env.get("EXPRESS_APP_DISABLE_LICENSE_GATE") == "1"
@@ -526,17 +551,37 @@ def request_startup_license(parent: tk.Tk) -> bool:
     return dialog.result
 
 
+def create_startup_lock_overlay(app: tk.Tk, overlay_factory=StartupLockOverlay):
+    overlay = overlay_factory(app)
+    setattr(app, "startup_lock_overlay", overlay)
+    return overlay
+
+
+def remove_startup_lock_overlay(app: tk.Tk) -> None:
+    overlay = getattr(app, "startup_lock_overlay", None)
+    if overlay is not None:
+        overlay.destroy()
+    setattr(app, "startup_lock_overlay", None)
+
+
 def run_startup_license_gate(
     app: tk.Tk,
     *,
     environ: dict[str, str] | None = None,
+    create_overlay=create_startup_lock_overlay,
+    remove_overlay=None,
     request_license=request_startup_license,
 ) -> bool:
     if should_skip_license_gate(environ):
         return True
     app.update_idletasks()
+    overlay = create_overlay(app)
+    if remove_overlay is None:
+        remove_overlay = lambda _overlay: remove_startup_lock_overlay(app)
     if request_license(app):
+        remove_overlay(overlay)
         return True
+    remove_overlay(overlay)
     app.destroy()
     return False
 
