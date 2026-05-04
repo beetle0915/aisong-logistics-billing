@@ -333,6 +333,36 @@ class V821WorkflowTest(unittest.TestCase):
 
         self.assertNotEqual(before, after)
 
+    def test_price_directory_access_accepts_salesman_version_folders(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_text:
+            temp_dir = Path(temp_dir_text)
+            price_dir = temp_dir / "prices"
+            write_file(price_dir / "张三" / "20260503张三-快递报价.xlsx")
+            app = ExpressFeeApp.__new__(ExpressFeeApp)
+
+            price_files = app._find_price_workbooks(price_dir)
+
+        self.assertEqual([path.name for path in price_files], ["20260503张三-快递报价.xlsx"])
+
+    def test_preflight_signature_changes_when_versioned_price_file_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_text:
+            temp_dir = Path(temp_dir_text)
+            price_dir = temp_dir / "prices"
+            price_file = write_file(price_dir / "张三" / "20260503张三-快递报价.xlsx", "before")
+            config = ExpressFeeBatchJobConfig(
+                sales_files=[temp_dir / "sales.xlsx"],
+                price_dir=price_dir,
+                output_dir=temp_dir / "output",
+                split_dir=temp_dir / "split",
+            )
+            app = ExpressFeeApp.__new__(ExpressFeeApp)
+
+            before = app._config_signature(config)
+            price_file.write_text("after price table", encoding="utf-8")
+            after = app._config_signature(config)
+
+        self.assertNotEqual(before, after)
+
     def test_hidden_refresh_all_option_is_forced_off_in_job_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_text:
             temp_dir = Path(temp_dir_text)

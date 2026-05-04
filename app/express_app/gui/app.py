@@ -2088,11 +2088,7 @@ class ExpressFeeApp(tk.Tk):
     def _price_dir_signature(self, price_dir: Path) -> tuple[tuple[str, int | None, int | None], ...]:
         resolved_dir = price_dir.expanduser().resolve()
         try:
-            price_files = sorted(
-                path
-                for path in resolved_dir.glob("*.xlsx")
-                if not path.name.startswith("~$") and path.is_file()
-            )
+            price_files = self._find_price_workbooks(resolved_dir)
         except OSError:
             return ((str(resolved_dir), None, None),)
         return tuple(self._file_signature(path) for path in price_files)
@@ -2223,7 +2219,7 @@ class ExpressFeeApp(tk.Tk):
     def _find_price_workbooks(self, price_dir: Path) -> list[Path]:
         return sorted(
             path
-            for path in price_dir.glob("*.xlsx")
+            for path in price_dir.rglob("*.xlsx")
             if not path.name.startswith("~$") and path.is_file()
         )
 

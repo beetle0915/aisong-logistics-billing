@@ -18,7 +18,7 @@ import argparse
 import copy
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -55,7 +55,17 @@ RAW_EXPRESS_COLUMN = "快递公司"
 SHIPPING_DATE_COLUMN = "出库日期"
 
 REQUIRED_SALES_COLUMNS = [SHIPPING_DATE_COLUMN, "业务员", RAW_EXPRESS_COLUMN, "省", "重量"]
-RESULT_COLUMNS = ["快递费用", "首重费用", "续重费用", "续重重量", STANDARD_EXPRESS_COLUMN]
+PRICE_VERSION_COLUMN = "报价版本"
+PRICE_EFFECTIVE_DATE_COLUMN = "报价生效日期"
+RESULT_COLUMNS = [
+    "快递费用",
+    "首重费用",
+    "续重费用",
+    "续重重量",
+    STANDARD_EXPRESS_COLUMN,
+    PRICE_VERSION_COLUMN,
+    PRICE_EFFECTIVE_DATE_COLUMN,
+]
 SUMMARY_SHEET_NAME = "快递费汇总"
 DETAIL_SHEET_NAME = "快递明细"
 CUSTOMER_HISTORY_SUMMARY_FILE = "客户快递费历史汇总.xlsx"
@@ -99,6 +109,7 @@ DEFAULT_LARGE_PIECE_COMPANIES = {"顺丰", "德邦"}
 DEFAULT_LARGE_PIECE_THRESHOLD_KG = 20
 DEFAULT_LARGE_PIECE_SUFFIX = "_大件"
 INTEGER_ROUNDING_EXPRESS_COMPANIES = {"德邦"}
+PRICE_VERSION_FILE_PATTERN = re.compile(r"^(\d{8})_?(.+)-快递报价.*\.xlsx$")
 ProgressCallback = Callable[[str], None]
 PROGRESS_ROW_INTERVAL = 200
 PROGRESS_GROUP_INTERVAL = 20
@@ -161,6 +172,39 @@ def normalize_rule_config(rule_config: ExpressFeeRuleConfig | None) -> ExpressFe
 class Price:
     first_price: float
     extra_price: float
+    version: str = ""
+    effective_date: str = ""
+    price_file: Path | None = None
+    sheet_name: str = ""
+    row_number: int = 0
+
+
+@dataclass(frozen=True)
+class PriceWorkbookRef:
+    salesman: str
+    price_file: Path
+    version: str = ""
+    effective_date: str = ""
+    is_versioned: bool = False
+
+    @property
+    def effective_sort_date(self) -> date:
+        if not self.effective_date:
+            return date.min
+        return date.fromisoformat(self.effective_date)
+
+
+@dataclass
+class VersionedPriceCatalog:
+    versions_by_salesman: dict[str, list[PriceWorkbookRef]]
+    price_maps_by_file: dict[Path, dict[tuple[str, str], Price]]
+    templates_by_file: dict[Path, set[str]]
+    standard_companies: set[str]
+    selection_cache: dict[tuple[str, str], PriceWorkbookRef | None] = field(default_factory=dict)
+
+    @property
+    def salesmen(self) -> set[str]:
+        return set(self.versions_by_salesman)
 
 
 @dataclass(frozen=True)
@@ -208,6 +252,8 @@ class PriceTemplateSummary:
     sheet_names: list[str]
     status: str
     errors: list[str]
+    version: str = ""
+    effective_date: str = ""
 
     @property
     def sheet_count(self) -> int:
@@ -221,7 +267,11 @@ class PriceTemplateCatalog:
 
     @property
     def customer_names(self) -> list[str]:
-        return [summary.customer for summary in self.summaries]
+        names: list[str] = []
+        for summary in self.summaries:
+            if summary.customer not in names:
+                names.append(summary.customer)
+        return names
 
 
 @dataclass
@@ -427,6 +477,124 @@ def parse_salesman_from_filename(path: Path) -> str:
     return stem.split("-", 1)[0].strip()
 
 
+def parse_price_version_filename(path: Path, salesman: str) -> tuple[str, str]:
+    match = PRICE_VERSION_FILE_PATTERN.match(path.name)
+    if match is None:
+        raise ValueError(
+            format_error_block(
+                "报价表错误",
+                f"报价文件名不符合版本格式：{path.name}",
+                f"请将文件命名为类似「20260503{salesman}-快递报价.xlsx」。",
+                stage="识别报价版本",
+                location=str(path),
+            )
+        )
+
+    version = match.group(1)
+    file_salesman = normalize_text(match.group(2))
+    try:
+        effective_date = datetime.strptime(version, "%Y%m%d").date().isoformat()
+    except ValueError as exc:
+        raise ValueError(
+            format_error_block(
+                "报价表错误",
+                f"报价文件名前 8 位不是有效日期：{version}",
+                "请使用 YYYYMMDD 格式，例如 20260503。",
+                stage="识别报价版本",
+                location=str(path),
+            )
+        ) from exc
+
+    if file_salesman != salesman:
+        raise ValueError(
+            format_error_block(
+                "报价表错误",
+                "报价文件名中的业务员和文件夹名不一致。",
+                "请保持文件夹名和报价文件名中的业务员一致。",
+                stage="识别报价版本",
+                location=str(path),
+                context={"文件夹业务员": salesman, "文件名业务员": file_salesman},
+            )
+        )
+    return version, effective_date
+
+
+def discover_price_workbook_refs(price_dir: Path) -> list[PriceWorkbookRef]:
+    if not price_dir.exists():
+        raise FileNotFoundError(
+            format_error_block(
+                "报价表错误",
+                f"报价目录不存在：{price_dir}",
+                "请重新选择报价表目录，确认目录存在且当前用户有读取权限。",
+                stage="读取报价表",
+                location=str(price_dir),
+            )
+        )
+
+    refs: list[PriceWorkbookRef] = []
+    for path in sorted(price_dir.glob("*.xlsx")):
+        if not path.name.startswith("~$") and path.is_file():
+            salesman = parse_salesman_from_filename(path)
+            if salesman:
+                refs.append(PriceWorkbookRef(salesman=salesman, price_file=path))
+
+    for salesman_dir in sorted(path for path in price_dir.iterdir() if path.is_dir() and not path.name.startswith(".")):
+        salesman = normalize_text(salesman_dir.name)
+        for path in sorted(salesman_dir.glob("*.xlsx")):
+            if path.name.startswith("~$") or not path.is_file():
+                continue
+            version, effective_date = parse_price_version_filename(path, salesman)
+            refs.append(
+                PriceWorkbookRef(
+                    salesman=salesman,
+                    price_file=path,
+                    version=version,
+                    effective_date=effective_date,
+                    is_versioned=True,
+                )
+            )
+
+    versioned_salesmen = {ref.salesman for ref in refs if ref.is_versioned}
+    refs = [
+        ref
+        for ref in refs
+        if ref.is_versioned or ref.salesman not in versioned_salesmen
+    ]
+
+    if not refs:
+        raise FileNotFoundError(
+            format_error_block(
+                "报价表错误",
+                "目录中没有找到可用的 .xlsx 报价文件。",
+                "请重新选择报价表目录，确认选择的是包含业务员报价 Excel 的目录。",
+                stage="读取报价表",
+                location=str(price_dir),
+                context={"报价目录": price_dir},
+            )
+        )
+
+    seen_versions: dict[tuple[str, str], Path] = {}
+    for ref in refs:
+        if not ref.is_versioned:
+            continue
+        key = (ref.salesman, ref.effective_date)
+        previous = seen_versions.get(key)
+        if previous is not None:
+            raise ValueError(
+                format_error_block(
+                    "报价表错误",
+                    f"业务员「{ref.salesman}」存在重复报价版本：{ref.effective_date}",
+                    "请同一天只保留一个业务员报价版本文件。",
+                    stage="识别报价版本",
+                    location=str(ref.price_file.parent),
+                    context={"重复文件": f"{previous.name}、{ref.price_file.name}"},
+                )
+            )
+        seen_versions[key] = ref.price_file
+
+    return refs
+
+
 def find_header_indexes(ws: openpyxl.worksheet.worksheet.Worksheet) -> dict[str, int]:
     headers: dict[str, int] = {}
     for column in range(1, ws.max_column + 1):
@@ -553,60 +721,23 @@ def resolve_price_sheet_name(
     return express_company
 
 
-def load_price_tables(price_dir: Path) -> dict[tuple[str, str, str], Price]:
-    if not price_dir.exists():
-        raise FileNotFoundError(
-            format_error_block(
-                "报价表错误",
-                f"报价目录不存在：{price_dir}",
-                "请重新选择报价表目录，确认目录存在且当前用户有读取权限。",
-                stage="读取报价表",
-                location=str(price_dir),
-            )
-        )
-
-    price_map: dict[tuple[str, str, str], Price] = {}
-    price_files = sorted(
-        path
-        for path in price_dir.glob("*.xlsx")
-        if not path.name.startswith("~$") and path.is_file()
-    )
-    if not price_files:
-        raise FileNotFoundError(
-            format_error_block(
-                "报价表错误",
-                "目录中没有找到可用的 .xlsx 报价文件。",
-                "请重新选择报价表目录，确认选择的是包含业务员报价 Excel 的目录。",
-                stage="读取报价表",
-                location=str(price_dir),
-                context={"报价目录": price_dir},
-            )
-        )
-
-    for price_file in price_files:
-        salesman = parse_salesman_from_filename(price_file)
-        if not salesman:
-            raise ValueError(f"无法从报价文件名解析业务员：{price_file.name}")
-
-        workbook = openpyxl.load_workbook(price_file, data_only=True)
+def load_price_workbook_prices(ref: PriceWorkbookRef) -> tuple[dict[tuple[str, str], Price], set[str]]:
+    price_map: dict[tuple[str, str], Price] = {}
+    templates: set[str] = set()
+    workbook = openpyxl.load_workbook(ref.price_file, data_only=True, read_only=True)
+    try:
         for ws in workbook.worksheets:
             express_company = normalize_text(ws.title)
             headers = find_header_indexes(ws)
             require_columns(
                 headers,
-                [
-                    PRICE_COLUMNS["province"],
-                    PRICE_COLUMNS["first_price"],
-                    PRICE_COLUMNS["extra_price"],
-                ],
-                f"{price_file.name}/{ws.title}",
+                PRICE_TEMPLATE_REQUIRED_COLUMNS,
+                f"{ref.price_file.name}/{ws.title}",
                 category="报价表错误",
                 stage="读取报价表",
-                suggestion=(
-                    "请检查报价表 sheet 表头，必须包含「省份参照列」「首重费用」「续重费用」。"
-                ),
+                suggestion="请检查报价表 sheet 表头，必须包含「省份参照列」「首重费用」「续重费用」。",
             )
-
+            templates.add(express_company)
             province_col = headers[PRICE_COLUMNS["province"]]
             first_col = headers[PRICE_COLUMNS["first_price"]]
             extra_col = headers[PRICE_COLUMNS["extra_price"]]
@@ -618,102 +749,217 @@ def load_price_tables(price_dir: Path) -> dict[tuple[str, str, str], Price]:
 
                 first_price = parse_number(
                     ws.cell(row=row, column=first_col).value,
-                    f"{price_file.name}/{ws.title} 第 {row} 行首重费用",
+                    f"{ref.price_file.name}/{ws.title} 第 {row} 行首重费用",
                 )
                 extra_price = parse_number(
                     ws.cell(row=row, column=extra_col).value,
-                    f"{price_file.name}/{ws.title} 第 {row} 行续重费用",
+                    f"{ref.price_file.name}/{ws.title} 第 {row} 行续重费用",
                 )
 
-                key = (salesman, express_company, province)
+                key = (express_company, province)
                 if key in price_map:
                     raise ValueError(
                         "报价重复："
-                        f"业务员={salesman}，快递={express_company}，省={province}"
+                        f"业务员={ref.salesman}，快递={express_company}，省={province}"
                     )
-                price_map[key] = Price(first_price=first_price, extra_price=extra_price)
+                price_map[key] = Price(
+                    first_price=first_price,
+                    extra_price=extra_price,
+                    version=ref.version,
+                    effective_date=ref.effective_date,
+                    price_file=ref.price_file,
+                    sheet_name=express_company,
+                    row_number=row,
+                )
+    finally:
+        workbook.close()
+    return price_map, templates
 
+
+def load_price_workbook_templates(ref: PriceWorkbookRef) -> set[str]:
+    templates: set[str] = set()
+    workbook = openpyxl.load_workbook(ref.price_file, data_only=True, read_only=True)
+    try:
+        for ws in workbook.worksheets:
+            express_company = normalize_text(ws.title)
+            headers = find_header_indexes(ws)
+            require_columns(
+                headers,
+                PRICE_TEMPLATE_REQUIRED_COLUMNS,
+                f"{ref.price_file.name}/{ws.title}",
+                category="报价表错误",
+                stage="运行前验证",
+                suggestion="请检查报价表 sheet 表头，必须包含「省份参照列」「首重费用」「续重费用」。",
+            )
+            templates.add(express_company)
+    finally:
+        workbook.close()
+    return templates
+
+
+def select_price_workbook_ref(
+    catalog: VersionedPriceCatalog,
+    salesman: str,
+    shipping_date: str,
+) -> PriceWorkbookRef | None:
+    cache_key = (salesman, shipping_date)
+    if cache_key in catalog.selection_cache:
+        return catalog.selection_cache[cache_key]
+
+    versions = catalog.versions_by_salesman.get(salesman, [])
+    selected: PriceWorkbookRef | None = None
+    current_date = date.fromisoformat(shipping_date)
+    for ref in versions:
+        if ref.is_versioned and ref.effective_sort_date > current_date:
+            continue
+        selected = ref
+    catalog.selection_cache[cache_key] = selected
+    return selected
+
+
+def selected_price_workbook_refs_for_context(
+    versions_by_salesman: dict[str, list[PriceWorkbookRef]],
+    sales_context: dict[str, set[str]],
+) -> set[Path]:
+    catalog = VersionedPriceCatalog(
+        versions_by_salesman=versions_by_salesman,
+        price_maps_by_file={},
+        templates_by_file={},
+        standard_companies=set(),
+    )
+    selected_files: set[Path] = set()
+    for salesman, shipping_dates in sales_context.items():
+        for shipping_date in shipping_dates:
+            selected = select_price_workbook_ref(catalog, salesman, shipping_date)
+            if selected is not None:
+                selected_files.add(selected.price_file)
+    return selected_files
+
+
+def build_versioned_price_catalog(
+    price_dir: Path,
+    sales_context: dict[str, set[str]] | None = None,
+    rule_config: ExpressFeeRuleConfig | None = None,
+) -> VersionedPriceCatalog:
+    resolved_rule_config = normalize_rule_config(rule_config)
+    refs = discover_price_workbook_refs(price_dir)
+    if sales_context is not None:
+        refs = [ref for ref in refs if ref.salesman in sales_context]
+    versions_by_salesman: dict[str, list[PriceWorkbookRef]] = {}
+    for ref in refs:
+        versions_by_salesman.setdefault(ref.salesman, []).append(ref)
+    for versions in versions_by_salesman.values():
+        versions.sort(key=lambda item: (item.effective_sort_date, item.version, item.price_file.name))
+
+    selected_files: set[Path] = set()
+    if sales_context is None:
+        selected_files = {ref.price_file for versions in versions_by_salesman.values() for ref in versions}
+    else:
+        selected_files = selected_price_workbook_refs_for_context(versions_by_salesman, sales_context)
+
+    price_maps_by_file: dict[Path, dict[tuple[str, str], Price]] = {}
+    templates_by_file: dict[Path, set[str]] = {}
+    standard_companies: set[str] = set()
+    ref_by_file = {ref.price_file: ref for versions in versions_by_salesman.values() for ref in versions}
+    for price_file in sorted(selected_files, key=lambda path: str(path)):
+        price_map, templates = load_price_workbook_prices(ref_by_file[price_file])
+        price_maps_by_file[price_file] = price_map
+        templates_by_file[price_file] = templates
+        standard_companies.update(templates)
+
+    return VersionedPriceCatalog(
+        versions_by_salesman=versions_by_salesman,
+        price_maps_by_file=price_maps_by_file,
+        templates_by_file=templates_by_file,
+        standard_companies={
+            name
+            for name in standard_companies
+            if not name.endswith(resolved_rule_config.large_piece_suffix)
+        },
+    )
+
+
+def build_preflight_price_catalog(
+    price_dir: Path,
+    sales_context: dict[str, set[str]],
+    rule_config: ExpressFeeRuleConfig,
+) -> VersionedPriceCatalog:
+    refs = discover_price_workbook_refs(price_dir)
+    refs = [ref for ref in refs if ref.salesman in sales_context]
+    versions_by_salesman: dict[str, list[PriceWorkbookRef]] = {}
+    for ref in refs:
+        versions_by_salesman.setdefault(ref.salesman, []).append(ref)
+    for versions in versions_by_salesman.values():
+        versions.sort(key=lambda item: (item.effective_sort_date, item.version, item.price_file.name))
+
+    catalog = VersionedPriceCatalog(
+        versions_by_salesman=versions_by_salesman,
+        price_maps_by_file={},
+        templates_by_file={},
+        standard_companies=set(),
+    )
+    selected_files = selected_price_workbook_refs_for_context(versions_by_salesman, sales_context)
+
+    ref_by_file = {ref.price_file: ref for versions in versions_by_salesman.values() for ref in versions}
+    for price_file in selected_files:
+        templates = load_price_workbook_templates(ref_by_file[price_file])
+        catalog.templates_by_file[price_file] = templates
+        catalog.standard_companies.update(
+            name for name in templates if not name.endswith(rule_config.large_piece_suffix)
+        )
+    catalog.standard_companies.update(
+        standard
+        for standard in rule_config.exact_company_map.values()
+        if standard
+    )
+    catalog.standard_companies.update(
+        item.standard_name
+        for item in rule_config.keyword_company_rules
+        if item.standard_name
+    )
+    return catalog
+
+
+def load_price_tables(price_dir: Path) -> dict[tuple[str, str, str], Price]:
+    catalog = build_versioned_price_catalog(price_dir)
+    price_map: dict[tuple[str, str, str], Price] = {}
+    for versions in catalog.versions_by_salesman.values():
+        for ref in versions:
+            if ref.price_file not in catalog.price_maps_by_file:
+                continue
+            for (express_company, province), price in catalog.price_maps_by_file[ref.price_file].items():
+                key = (ref.salesman, express_company, province)
+                if key in price_map:
+                    raise ValueError(
+                        "报价重复："
+                        f"业务员={ref.salesman}，快递={express_company}，省={province}"
+                    )
+                price_map[key] = price
     return price_map
 
 
 def load_preflight_price_catalog(price_dir: Path, rule_config: ExpressFeeRuleConfig) -> PreflightPriceCatalog:
     """Read the minimum price workbook metadata needed for input validation."""
-
-    if not price_dir.exists():
-        raise FileNotFoundError(
-            format_error_block(
-                "报价表错误",
-                f"报价目录不存在：{price_dir}",
-                "请重新选择报价表目录，确认目录存在且当前用户有读取权限。",
-                stage="运行前验证",
-                location=str(price_dir),
-            )
-        )
-
-    price_files = sorted(
-        path
-        for path in price_dir.glob("*.xlsx")
-        if not path.name.startswith("~$") and path.is_file()
-    )
-    if not price_files:
-        raise FileNotFoundError(
-            format_error_block(
-                "报价表错误",
-                "目录中没有找到可用的 .xlsx 报价文件。",
-                "请重新选择报价表目录，确认选择的是包含业务员报价 Excel 的目录。",
-                stage="运行前验证",
-                location=str(price_dir),
-                context={"报价目录": price_dir},
-            )
-        )
-
+    refs = discover_price_workbook_refs(price_dir)
     templates_by_salesman: dict[str, set[str]] = {}
     standard_companies: set[str] = set()
-    errors: list[str] = []
-    for price_file in price_files:
-        salesman = parse_salesman_from_filename(price_file)
-        if not salesman:
-            errors.append(f"报价文件 {price_file.name} 无法从文件名解析业务员。")
-            continue
-        salesman_templates = templates_by_salesman.setdefault(salesman, set())
-
-        workbook = openpyxl.load_workbook(price_file, data_only=True, read_only=True)
-        try:
-            for ws in workbook.worksheets:
-                express_company = normalize_text(ws.title)
-                headers = find_header_indexes(ws)
-                require_columns(
-                    headers,
-                    PRICE_TEMPLATE_REQUIRED_COLUMNS,
-                    f"{price_file.name}/{ws.title}",
-                    category="报价表错误",
-                    stage="运行前验证",
-                    suggestion=(
-                        "请检查报价表 sheet 表头，必须包含「省份参照列」「首重费用」「续重费用」。"
-                    ),
-                )
-                if not express_company.endswith(rule_config.large_piece_suffix):
-                    standard_companies.add(express_company)
-                salesman_templates.add(express_company)
-        finally:
-            workbook.close()
-
-    if errors:
-        raise ValueError(
-            format_error_block(
-                "报价表错误",
-                "报价目录中存在无法识别业务员的报价文件。",
-                "请确认报价文件名类似「客户A-快递报价.xlsx」。",
-                stage="运行前验证",
-                location=str(price_dir),
-                context={"问题文件": "；".join(errors)},
-            )
+    for ref in refs:
+        templates = load_price_workbook_templates(ref)
+        templates_by_salesman.setdefault(ref.salesman, set()).update(templates)
+        standard_companies.update(
+            name for name in templates if not name.endswith(rule_config.large_piece_suffix)
         )
-
-    return PreflightPriceCatalog(
-        standard_companies=standard_companies,
-        templates_by_salesman=templates_by_salesman,
+    standard_companies.update(
+        standard
+        for standard in rule_config.exact_company_map.values()
+        if standard
     )
+    standard_companies.update(
+        item.standard_name
+        for item in rule_config.keyword_company_rules
+        if item.standard_name
+    )
+    return PreflightPriceCatalog(standard_companies=standard_companies, templates_by_salesman=templates_by_salesman)
 
 
 def find_price_files_by_salesman(price_dir: Path) -> dict[str, Path]:
@@ -727,12 +973,12 @@ def find_price_files_by_salesman(price_dir: Path) -> dict[str, Path]:
                 location=str(price_dir),
             )
         )
-    price_files = sorted(
-        path
-        for path in price_dir.glob("*.xlsx")
-        if not path.name.startswith("~$") and path.is_file()
-    )
-    if not price_files:
+    refs = [
+        ref
+        for ref in discover_price_workbook_refs(price_dir)
+        if not ref.is_versioned
+    ]
+    if not refs:
         raise FileNotFoundError(
             format_error_block(
                 "报价表错误",
@@ -743,63 +989,16 @@ def find_price_files_by_salesman(price_dir: Path) -> dict[str, Path]:
                 context={"报价目录": price_dir},
             )
         )
-    return {parse_salesman_from_filename(path): path for path in price_files}
+    return {ref.salesman: ref.price_file for ref in refs}
 
 
 def scan_price_template_catalog(price_dir: Path) -> PriceTemplateCatalog:
-    if not price_dir.exists():
-        raise FileNotFoundError(
-            format_error_block(
-                "报价表错误",
-                f"报价目录不存在：{price_dir}",
-                "请重新选择报价表目录，确认目录存在且当前用户有读取权限。",
-                stage="同步报价目录",
-                location=str(price_dir),
-            )
-        )
-
-    price_files = sorted(
-        path
-        for path in price_dir.glob("*.xlsx")
-        if not path.name.startswith("~$") and path.is_file()
-    )
-    if not price_files:
-        raise FileNotFoundError(
-            format_error_block(
-                "报价表错误",
-                "目录中没有找到可用的 .xlsx 报价文件。",
-                "请确认选择的是包含客户报价 Excel 的目录。",
-                stage="同步报价目录",
-                location=str(price_dir),
-                context={"报价目录": price_dir},
-            )
-        )
-
+    refs = discover_price_workbook_refs(price_dir)
     summaries: list[PriceTemplateSummary] = []
     errors: list[str] = []
-    seen_customers: dict[str, Path] = {}
-    for price_file in price_files:
-        customer = parse_salesman_from_filename(price_file)
-        if not customer:
-            errors.append(f"跳过报价文件：{price_file.name}，无法从文件名解析客户名。")
-            continue
-        if customer in seen_customers:
-            raise ValueError(
-                format_error_block(
-                    "报价表错误",
-                    f"客户「{customer}」存在多个报价文件。",
-                    "请保留一个正式报价文件，或调整文件名避免重复客户名。",
-                    stage="同步报价目录",
-                    location=str(price_dir),
-                    context={
-                        "重复文件": f"{seen_customers[customer].name}、{price_file.name}",
-                    },
-                )
-            )
-        seen_customers[customer] = price_file
-
+    for ref in refs:
         try:
-            workbook = openpyxl.load_workbook(price_file, data_only=True, read_only=True)
+            workbook = openpyxl.load_workbook(ref.price_file, data_only=True, read_only=True)
             sheet_names = list(workbook.sheetnames)
         except OSError as exc:
             sheet_names = []
@@ -808,22 +1007,24 @@ def scan_price_template_catalog(price_dir: Path) -> PriceTemplateCatalog:
                 "报价文件无法打开。",
                 "请确认文件是有效的 .xlsx，且没有被 Excel 独占锁定。",
                 stage="同步报价目录",
-                location=str(price_file),
+                location=str(ref.price_file),
                 system_error=exc,
             )
             errors.append(message)
         status = "正常" if sheet_names else "读取失败"
         summaries.append(
             PriceTemplateSummary(
-                customer=customer,
-                price_file=price_file,
+                customer=ref.salesman,
+                price_file=ref.price_file,
                 sheet_names=sheet_names,
                 status=status,
                 errors=[] if status == "正常" else [errors[-1]],
+                version=ref.version,
+                effective_date=ref.effective_date,
             )
         )
 
-    summaries.sort(key=lambda item: item.customer)
+    summaries.sort(key=lambda item: (item.customer, item.effective_date, item.version, item.price_file.name))
     if not summaries:
         raise FileNotFoundError(
             format_error_block(
@@ -996,6 +1197,89 @@ def append_result_columns(
     return result_indexes
 
 
+def collect_sales_price_context(sales_file: Path) -> dict[str, set[str]]:
+    workbook = openpyxl.load_workbook(sales_file, read_only=True, data_only=True)
+    try:
+        ws = workbook.active
+        headers = find_header_indexes(ws)
+        require_columns(
+            headers,
+            [SHIPPING_DATE_COLUMN, "业务员"],
+            str(sales_file),
+            category="销售表结构错误",
+            stage="读取销售出库单",
+            suggestion="请确认销售表包含「出库日期」和「业务员」列。",
+        )
+        salesman_col = headers["业务员"] - 1
+        date_col = headers[SHIPPING_DATE_COLUMN] - 1
+        context: dict[str, set[str]] = {}
+        for values in ws.iter_rows(min_row=2, values_only=True):
+            salesman = normalize_text(values[salesman_col])
+            if not salesman:
+                continue
+            try:
+                shipping_date = parse_shipping_date(values[date_col])
+            except ValueError:
+                continue
+            context.setdefault(salesman, set()).add(shipping_date)
+        return context
+    finally:
+        workbook.close()
+
+
+def merge_sales_price_contexts(contexts: list[dict[str, set[str]]]) -> dict[str, set[str]]:
+    merged: dict[str, set[str]] = {}
+    for context in contexts:
+        for salesman, dates in context.items():
+            merged.setdefault(salesman, set()).update(dates)
+    return merged
+
+
+def merge_visible_headers(existing_headers: list[str] | None, incoming_headers: list[str]) -> list[str]:
+    merged = list(existing_headers or [])
+    for header in incoming_headers:
+        if header and header not in merged:
+            merged.append(header)
+    return merged
+
+
+def align_row_values_to_headers(
+    row_values: list[Any],
+    source_headers: list[str],
+    target_headers: list[str],
+) -> list[Any]:
+    source_map = {header: index for index, header in enumerate(source_headers) if header}
+    return [
+        row_values[source_map[header]]
+        if header in source_map and source_map[header] < len(row_values)
+        else None
+        for header in target_headers
+    ]
+
+
+def build_available_standard_companies_from_catalog(
+    price_catalog: VersionedPriceCatalog,
+    rule_config: ExpressFeeRuleConfig,
+) -> set[str]:
+    standard_companies = {
+        sheet_name
+        for templates in price_catalog.templates_by_file.values()
+        for sheet_name in templates
+        if not sheet_name.endswith(rule_config.large_piece_suffix)
+    }
+    standard_companies.update(
+        standard
+        for standard in rule_config.exact_company_map.values()
+        if standard
+    )
+    standard_companies.update(
+        item.standard_name
+        for item in rule_config.keyword_company_rules
+        if item.standard_name
+    )
+    return standard_companies
+
+
 def process_sales_workbook(
     sales_file: Path,
     price_map: dict[tuple[str, str, str], Price],
@@ -1004,6 +1288,7 @@ def process_sales_workbook(
     round_digits: int | None,
     rule_config: ExpressFeeRuleConfig,
     progress_callback: ProgressCallback | None = None,
+    price_catalog: VersionedPriceCatalog | None = None,
 ) -> ProcessingSummary:
     workbook = openpyxl.load_workbook(sales_file)
     ws = workbook.active
@@ -1030,6 +1315,7 @@ def process_sales_workbook(
     raw_express_col = sales_headers[RAW_EXPRESS_COLUMN]
     province_col = sales_headers["省"]
     weight_col = sales_headers["重量"]
+    shipping_date_col = sales_headers[SHIPPING_DATE_COLUMN]
 
     for row in range(2, ws.max_row + 1):
         for column_name in RESULT_COLUMNS:
@@ -1042,8 +1328,10 @@ def process_sales_workbook(
         weight_value = None
         weight: float | None = None
         price_sheet_name = ""
+        shipping_date = ""
         try:
             salesman = normalize_text(ws.cell(row=row, column=salesman_col).value)
+            shipping_date = parse_shipping_date(ws.cell(row=row, column=shipping_date_col).value)
             raw_express_company = ws.cell(row=row, column=raw_express_col).value
             express_company = parse_standard_express_company(
                 raw_express_company,
@@ -1070,12 +1358,32 @@ def process_sales_workbook(
                 express_company
             )
 
-            key = (salesman, price_sheet_name, province)
-            price = price_map.get(key)
+            selected_ref: PriceWorkbookRef | None = None
+            if price_catalog is not None:
+                selected_ref = select_price_workbook_ref(price_catalog, salesman, shipping_date)
+                if selected_ref is None:
+                    raise ValueError(f"没有可用业务员报价版本：{salesman} / {shipping_date}")
+                price = price_catalog.price_maps_by_file.get(selected_ref.price_file, {}).get(
+                    (price_sheet_name, province)
+                )
+            else:
+                key = (salesman, price_sheet_name, province)
+                price = price_map.get(key)
             if price is None:
                 if (
                     price_sheet_name.endswith(rule_config.large_piece_suffix)
-                    and (salesman, express_company, province) in price_map
+                    and (
+                        (
+                            price_catalog is not None
+                            and selected_ref is not None
+                            and (express_company, province)
+                            in price_catalog.price_maps_by_file.get(selected_ref.price_file, {})
+                        )
+                        or (
+                            price_catalog is None
+                            and (salesman, express_company, province) in price_map
+                        )
+                    )
                 ):
                     reason = f"缺少大件报价模板：{price_sheet_name}"
                     suggestion = (
@@ -1102,6 +1410,8 @@ def process_sales_workbook(
                             "计费模板": price_sheet_name,
                             "省": province,
                             "重量": weight,
+                            "报价版本": selected_ref.version if selected_ref else "",
+                            "报价生效日期": selected_ref.effective_date if selected_ref else "",
                         },
                     )
                 )
@@ -1117,6 +1427,10 @@ def process_sales_workbook(
             ws.cell(row=row, column=result_columns["首重费用"]).value = price.first_price
             ws.cell(row=row, column=result_columns["续重费用"]).value = price.extra_price
             ws.cell(row=row, column=result_columns["续重重量"]).value = extra_weight
+            ws.cell(row=row, column=result_columns[PRICE_VERSION_COLUMN]).value = price.version or None
+            ws.cell(row=row, column=result_columns[PRICE_EFFECTIVE_DATE_COLUMN]).value = (
+                price.effective_date or None
+            )
             summary.success_rows += 1
         except ValueError as exc:
             message = str(exc)
@@ -1177,7 +1491,7 @@ def process_sales_workbook(
 
 def validate_sales_workbook_for_calculation(
     sales_file: Path,
-    price_catalog: PreflightPriceCatalog,
+    price_catalog: PreflightPriceCatalog | VersionedPriceCatalog,
     rule_config: ExpressFeeRuleConfig,
     require_history_detail_key: bool,
     progress_callback: ProgressCallback | None = None,
@@ -1222,6 +1536,29 @@ def validate_sales_workbook_for_calculation(
             outbound_value = None
             try:
                 salesman = normalize_text(values[salesman_col])
+                if not salesman:
+                    raise ValueError("业务员为空")
+                if salesman not in price_catalog.salesmen:
+                    raise ValueError(f"业务员没有价格表：{salesman}")
+
+                shipping_date_value = values[shipping_date_col]
+                if require_history_detail_key and outbound_index is not None:
+                    outbound_value = values[outbound_index]
+                    shipping_date = build_historical_detail_key(outbound_value, shipping_date_value).split("|", 1)[1]
+                    shipping_date = shipping_date.split(" ", 1)[0]
+                else:
+                    shipping_date = parse_shipping_date(shipping_date_value)
+
+                selected_ref: PriceWorkbookRef | None = None
+                available_templates: set[str]
+                if isinstance(price_catalog, VersionedPriceCatalog):
+                    selected_ref = select_price_workbook_ref(price_catalog, salesman, shipping_date)
+                    if selected_ref is None:
+                        raise ValueError(f"没有可用业务员报价版本：{salesman} / {shipping_date}")
+                    available_templates = price_catalog.templates_by_file.get(selected_ref.price_file, set())
+                else:
+                    available_templates = price_catalog.templates_by_salesman[salesman]
+
                 raw_express_company = values[raw_express_col]
                 express_company = parse_standard_express_company(
                     raw_express_company,
@@ -1233,19 +1570,9 @@ def validate_sales_workbook_for_calculation(
                 weight = parse_number(weight_value, "重量")
                 if weight <= 0:
                     raise ValueError(f"重量必须大于0：{weight}")
-                shipping_date_value = values[shipping_date_col]
-                if require_history_detail_key and outbound_index is not None:
-                    outbound_value = values[outbound_index]
-                    build_historical_detail_key(outbound_value, shipping_date_value)
-                else:
-                    parse_shipping_date(shipping_date_value)
 
-                if not salesman:
-                    raise ValueError("业务员为空")
-                if salesman not in price_catalog.salesmen:
-                    raise ValueError(f"业务员没有价格表：{salesman}")
                 price_sheet_name = resolve_price_sheet_name(express_company, weight, rule_config)
-                if price_sheet_name not in price_catalog.templates_by_salesman[salesman]:
+                if price_sheet_name not in available_templates:
                     raise ValueError(f"业务员报价表缺少计费模板：{salesman}/{price_sheet_name}")
                 if not province:
                     raise ValueError("省为空")
@@ -1274,7 +1601,12 @@ def validate_sales_workbook_for_calculation(
                     elif reason.startswith("重量必须大于0"):
                         suggestion = "请将重量改为大于 0 的数字。"
                     elif reason.startswith("业务员没有价格表"):
-                        suggestion = "请为该业务员补充对应的「业务员-快递报价.xlsx」报价文件。"
+                        suggestion = (
+                            "请在报价目录下新增该业务员文件夹，并放入类似"
+                            "「20260503业务员-快递报价.xlsx」的报价版本文件。"
+                        )
+                    elif reason.startswith("没有可用业务员报价版本"):
+                        suggestion = "请在该业务员文件夹中补充出库日期当天或更早日期的报价版本文件。"
                     elif reason.startswith("业务员报价表缺少计费模板"):
                         suggestion = "请在该业务员报价表中补充对应快递公司 sheet，或检查快递公司映射是否正确。"
                     elif reason.startswith("出库日期"):
@@ -1326,7 +1658,10 @@ def validate_express_fee_batch_job(
 
     emit_progress(progress_callback, f"验证：开始运行前测试，共 {len(sales_files)} 个销售表")
     try:
-        price_catalog = load_preflight_price_catalog(price_dir, rule_config)
+        sales_context = merge_sales_price_contexts(
+            [collect_sales_price_context(sales_file) for sales_file in sales_files]
+        )
+        price_catalog = build_preflight_price_catalog(price_dir, sales_context, rule_config)
     except Exception as exc:
         message = str(exc)
         if not message.startswith("["):
@@ -1984,6 +2319,25 @@ def load_daily_detail_rows_for_history(
 
             if visible_headers is None:
                 visible_headers = normalized_headers
+            else:
+                merged_headers = merge_visible_headers(visible_headers, normalized_headers)
+                if merged_headers != visible_headers:
+                    detail_rows = {
+                        key: HistoricalDetailRow(
+                            visible_values=align_row_values_to_headers(
+                                detail_row.visible_values,
+                                visible_headers,
+                                merged_headers,
+                            ),
+                            record_key=detail_row.record_key,
+                            first_imported_at=detail_row.first_imported_at,
+                            last_updated_at=detail_row.last_updated_at,
+                            source_file=detail_row.source_file,
+                            source_row=detail_row.source_row,
+                        )
+                        for key, detail_row in detail_rows.items()
+                    }
+                    visible_headers = merged_headers
 
             for row_number, row_values_tuple in enumerate(row_iter, start=2):
                 row_values = list(row_values_tuple)
@@ -2001,7 +2355,11 @@ def load_daily_detail_rows_for_history(
                 previous = detail_rows.get(record_key)
                 first_imported_at = previous.first_imported_at if previous else now_text
                 detail_rows[record_key] = HistoricalDetailRow(
-                    visible_values=row_values[: len(visible_headers)],
+                    visible_values=align_row_values_to_headers(
+                        row_values,
+                        normalized_headers,
+                        visible_headers,
+                    ),
                     record_key=record_key,
                     first_imported_at=first_imported_at or now_text,
                     last_updated_at=now_text,
@@ -2265,13 +2623,15 @@ def run_express_fee_job(
 
     if not suppress_initial_stage_headers:
         emit_progress(progress_callback, "阶段 1/5：准备数据，正在读取报价")
-    price_map = load_price_tables(price_dir)
-    emit_progress(progress_callback, f"里程碑：报价读取完成，共 {len(price_map)} 条报价")
-    available_standard_companies = {
-        sheet_name
-        for _, sheet_name, _ in price_map
-        if not sheet_name.endswith(rule_config.large_piece_suffix)
-    }
+    sales_context = collect_sales_price_context(sales_file)
+    price_catalog = build_versioned_price_catalog(price_dir, sales_context, rule_config)
+    price_map: dict[tuple[str, str, str], Price] = {}
+    loaded_price_count = sum(len(price_map_by_file) for price_map_by_file in price_catalog.price_maps_by_file.values())
+    emit_progress(progress_callback, f"里程碑：报价读取完成，共 {loaded_price_count} 条报价")
+    available_standard_companies = build_available_standard_companies_from_catalog(
+        price_catalog,
+        rule_config,
+    )
     if not suppress_initial_stage_headers:
         emit_progress(progress_callback, f"阶段 2/5：计算快递费，销售表：{sales_file.name}")
     processing_summary = process_sales_workbook(
@@ -2282,6 +2642,7 @@ def run_express_fee_job(
         config.round_digits,
         rule_config,
         progress_callback,
+        price_catalog,
     )
 
     logs.extend(
@@ -2408,6 +2769,44 @@ def run_express_fee_batch_job(
     if config.split_customer_daily_files:
         logs.append(f"客户拆分目录：{split_dir}")
     emit_progress(progress_callback, f"阶段 1/5：准备数据，共 {len(sales_files)} 个销售表")
+    price_catalog: VersionedPriceCatalog | None = None
+    try:
+        sales_context = merge_sales_price_contexts(
+            [collect_sales_price_context(sales_file) for sales_file in sales_files]
+        )
+        price_catalog = build_versioned_price_catalog(price_dir, sales_context, rule_config)
+        loaded_price_count = sum(
+            len(price_map_by_file)
+            for price_map_by_file in price_catalog.price_maps_by_file.values()
+        )
+        emit_progress(progress_callback, f"里程碑：报价读取完成，共 {loaded_price_count} 条报价")
+    except Exception as exc:
+        message = str(exc)
+        if not message.startswith("["):
+            message = format_error_block(
+                "报价表错误",
+                str(exc),
+                "请检查报价目录、业务员报价文件夹和报价版本文件。",
+                stage="读取报价表",
+                location=str(price_dir),
+                system_error=exc.__class__.__name__,
+            )
+        job_result = ExpressFeeJobResult(
+            sales_file=sales_files[0] if sales_files else Path(""),
+            price_dir=price_dir,
+            output_path=next(iter(output_paths.values()), output_dir / "未生成.xlsx"),
+            split_dir=split_dir,
+            processing_errors=[message],
+            logs=[message],
+        )
+        return ExpressFeeBatchJobResult(
+            sales_files=sales_files,
+            price_dir=price_dir,
+            output_dir=output_dir,
+            split_dir=split_dir,
+            job_results=[job_result],
+            logs=logs + [message],
+        )
 
     job_results: list[ExpressFeeJobResult] = []
     touched_customers: set[str] = set()
@@ -2432,10 +2831,44 @@ def run_express_fee_batch_job(
         )
 
         try:
-            result = run_express_fee_job(
-                job_config,
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            available_standard_companies = build_available_standard_companies_from_catalog(
+                price_catalog,
+                rule_config,
+            )
+            processing_summary = process_sales_workbook(
+                sales_file,
+                {},
+                available_standard_companies,
+                output_path,
+                config.round_digits,
+                rule_config,
                 progress_callback,
-                suppress_initial_stage_headers=True,
+                price_catalog,
+            )
+            result_logs = [
+                f"销售表：{sales_file}",
+                f"报价目录：{price_dir}",
+                f"输出文件：{output_path}",
+                "",
+                f"共处理：{processing_summary.total_rows} 条",
+                f"成功计算：{processing_summary.success_rows} 条",
+                f"失败：{processing_summary.failed_rows} 条",
+            ]
+            if processing_summary.errors:
+                result_logs.append("")
+                result_logs.append("失败明细：")
+                result_logs.extend(processing_summary.errors)
+            result = ExpressFeeJobResult(
+                sales_file=sales_file,
+                price_dir=price_dir,
+                output_path=output_path,
+                split_dir=split_dir,
+                total_rows=processing_summary.total_rows,
+                success_rows=processing_summary.success_rows,
+                failed_rows=processing_summary.failed_rows,
+                processing_errors=processing_summary.errors or [],
+                logs=result_logs,
             )
         except Exception as exc:  # Keep a batch moving if one workbook is bad.
             message = str(exc)

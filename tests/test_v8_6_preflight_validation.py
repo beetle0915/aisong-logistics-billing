@@ -110,8 +110,14 @@ class V86PreflightValidationTest(unittest.TestCase):
                 sales_file,
                 [["CK001", date(2026, 4, 7), "客户A", "申通", "浙江", 2.5]],
             )
-            self._write_price_file(price_dir, salesman="客户A", sheets={"顺丰": [("广东", 10, 2)]})
-            self._write_price_file(price_dir, salesman="客户B", sheets={"申通": [("广东", 8, 1)]})
+            self._write_price_file(
+                price_dir,
+                salesman="客户A",
+                sheets={
+                    "顺丰": [("广东", 10, 2)],
+                    "申通_大件": [("广东", 8, 1)],
+                },
+            )
 
             result = validate_express_fee_batch_job(self._config(temp_dir, sales_file, price_dir))
 
@@ -151,6 +157,7 @@ class V86PreflightValidationTest(unittest.TestCase):
             self.assertEqual(result.failed_rows, 4)
             self.assertIn("重量原值：abc", errors)
             self.assertIn("业务员没有价格表：客户B", errors)
+            self.assertIn("请在报价目录下新增该业务员文件夹", errors)
             self.assertIn("出库日期为空", errors)
             self.assertIn("出库单号为空", errors)
             self.assertFalse((temp_dir / "output").exists())
