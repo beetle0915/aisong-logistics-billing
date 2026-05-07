@@ -6,13 +6,14 @@ from pathlib import Path
 from typing import Any
 
 import openpyxl
-from openpyxl.styles import Font
+from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 
 BILL_DETAIL_SHEET_NAME = "账单明细"
 DEFAULT_SPLIT_FIELD = "经手人"
 TRACKING_NUMBER_FIELD = "运单号码"
+PAYABLE_AMOUNT_FIELD = "应付金额"
 SOURCE_FILE_FIELD = "来源文件"
 SOURCE_ROW_FIELD = "来源行号"
 
@@ -374,19 +375,42 @@ def _write_split_workbook(output_path: Path, common_headers: list[str], output_r
     for source_path in sorted(rows_by_source, key=lambda path: path.name):
         sheet_name = _sanitize_sheet_name(source_path.stem, used_sheet_names)
         ws = workbook.create_sheet(sheet_name)
+        source_rows = rows_by_source[source_path]
+        ws.append(_build_payable_summary_row(headers, source_rows))
         ws.append(headers)
-        for output_row in rows_by_source[source_path]:
+        for output_row in source_rows:
             ws.append(output_row.values + [source_path.name, output_row.source_row_number])
         _style_output_sheet(ws)
 
     workbook.save(output_path)
 
 
+def _build_payable_summary_row(headers: list[str], output_rows: list[OutputRow]) -> list[str]:
+    summary_row = [""] * len(headers)
+    summary_row[0] = "账款金额"
+    if PAYABLE_AMOUNT_FIELD in headers:
+        amount_column = get_column_letter(headers.index(PAYABLE_AMOUNT_FIELD) + 1)
+        first_data_row = 3
+        last_data_row = first_data_row + len(output_rows) - 1
+        summary_row[1] = f"=SUM({amount_column}{first_data_row}:{amount_column}{last_data_row})"
+    else:
+        summary_row[1] = f"缺少{PAYABLE_AMOUNT_FIELD}字段"
+    return summary_row
+
+
 def _style_output_sheet(ws: openpyxl.worksheet.worksheet.Worksheet) -> None:
+    summary_fill = PatternFill("solid", fgColor="FFF2CC")
     for cell in ws[1]:
+        cell.font = Font(bold=True, size=16)
+        cell.fill = summary_fill
+    ws.row_dimensions[1].height = 30
+    ws["B1"].number_format = '#,##0.00'
+
+    for cell in ws[2]:
         cell.font = Font(bold=True)
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
+    ws.freeze_panes = "A3"
+    if ws.max_row >= 2:
+        ws.auto_filter.ref = f"A2:{get_column_letter(ws.max_column)}{ws.max_row}"
     for column_cells in ws.columns:
         letter = get_column_letter(column_cells[0].column)
         max_length = max(len(_display_value(cell.value)) for cell in column_cells)

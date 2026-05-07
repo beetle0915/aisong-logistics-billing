@@ -149,8 +149,8 @@ class BillSplitterTest(unittest.TestCase):
             workbook = openpyxl.load_workbook(result.output_paths[0], data_only=True)
             self.assertEqual(workbook.sheetnames, ["正确"])
             ws = workbook["正确"]
-            self.assertEqual(ws["A2"].value, "YD001")
-            self.assertEqual(ws.max_row, 2)
+            self.assertEqual(ws["A3"].value, "YD001")
+            self.assertEqual(ws.max_row, 3)
 
     def test_common_headers_keep_first_valid_file_order_and_include_split_field(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_text:
@@ -183,7 +183,7 @@ class BillSplitterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir_text:
             input_dir = Path(temp_dir_text) / "五月账单"
             input_dir.mkdir()
-            headers = ["运单号码", "经手人", "费用"]
+            headers = ["运单号码", "经手人", "应付金额"]
             write_workbook(input_dir / "第一份.xlsx", {"账单明细": (headers, [["YD001", "张三", 12.5]])})
             write_workbook(input_dir / "第二份.xlsx", {"账单明细": (headers, [["YD002", "张三", 20]])})
 
@@ -191,12 +191,50 @@ class BillSplitterTest(unittest.TestCase):
 
             self.assertEqual(result.output_dir, input_dir.parent / "五月账单拆分结果【拆分字段：经手人】")
             self.assertEqual([path.name for path in result.output_paths], ["经手人_张三.xlsx"])
-            workbook = openpyxl.load_workbook(result.output_paths[0], data_only=True)
+            workbook = openpyxl.load_workbook(result.output_paths[0], data_only=False)
             self.assertEqual(workbook.sheetnames, ["第一份", "第二份"])
-            self.assertEqual(workbook["第一份"]["A2"].value, "YD001")
-            self.assertEqual(workbook["第二份"]["A2"].value, "YD002")
-            self.assertEqual(workbook["第一份"]["D1"].value, "来源文件")
-            self.assertEqual(workbook["第一份"]["E1"].value, "来源行号")
+            self.assertEqual(workbook["第一份"]["A1"].value, "账款金额")
+            self.assertEqual(workbook["第一份"]["B1"].value, "=SUM(C3:C3)")
+            self.assertEqual(workbook["第一份"]["A2"].value, "运单号码")
+            self.assertEqual(workbook["第一份"]["A3"].value, "YD001")
+            self.assertEqual(workbook["第二份"]["B1"].value, "=SUM(C3:C3)")
+            self.assertEqual(workbook["第二份"]["A3"].value, "YD002")
+            self.assertEqual(workbook["第一份"]["D2"].value, "来源文件")
+            self.assertEqual(workbook["第一份"]["E2"].value, "来源行号")
+
+    def test_each_split_sheet_adds_large_payable_amount_sum_row(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_text:
+            input_dir = Path(temp_dir_text) / "账单"
+            input_dir.mkdir()
+            headers = ["运单号码", "经手人", "应付金额", "费用"]
+            write_workbook(
+                input_dir / "明细.xlsx",
+                {
+                    "账单明细": (
+                        headers,
+                        [
+                            ["YD001", "张三", 12.5, 1],
+                            ["YD002", "张三", 20, 2],
+                        ],
+                    )
+                },
+            )
+
+            result = split_bills_by_field(input_dir)
+
+            workbook = openpyxl.load_workbook(result.output_paths[0], data_only=False)
+            ws = workbook["明细"]
+            self.assertEqual(ws["A1"].value, "账款金额")
+            self.assertEqual(ws["B1"].value, "=SUM(C3:C4)")
+            self.assertEqual(ws["C2"].value, "应付金额")
+            self.assertEqual(ws["A3"].value, "YD001")
+            self.assertEqual(ws["A4"].value, "YD002")
+            self.assertEqual(ws.row_dimensions[1].height, 30)
+            self.assertEqual(ws["A1"].font.sz, 16)
+            self.assertTrue(ws["A1"].font.bold)
+            self.assertTrue(ws["B1"].font.bold)
+            self.assertEqual(ws.freeze_panes, "A3")
+            self.assertEqual(ws.auto_filter.ref, "A2:F4")
 
     def test_split_bills_by_selected_field_instead_of_default_handler_field(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_text:
@@ -274,7 +312,7 @@ class BillSplitterTest(unittest.TestCase):
             self.assertEqual(result.output_paths, [stale_file])
             workbook = openpyxl.load_workbook(stale_file, data_only=True)
             self.assertEqual(workbook.sheetnames, ["明细"])
-            self.assertEqual(workbook["明细"]["A2"].value, "YD001")
+            self.assertEqual(workbook["明细"]["A3"].value, "YD001")
             self.assertNotIn("旧内容", workbook.sheetnames)
 
     def test_file_and_sheet_names_are_sanitized_and_sheet_conflicts_get_suffixes(self) -> None:
