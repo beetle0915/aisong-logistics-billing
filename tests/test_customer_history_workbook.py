@@ -54,6 +54,23 @@ class CustomerHistoryWorkbookTest(unittest.TestCase):
         output_path = customer_dir / f"{shipping_date:%Y-%m-%d}_{customer}_快递费明细.xlsx"
         workbook.save(output_path)
 
+    def _write_daily_detail_rows(
+        self,
+        customer_dir: Path,
+        customer: str,
+        shipping_date: date,
+        headers: list[str],
+        rows: list[list[object]],
+    ) -> None:
+        workbook = openpyxl.Workbook()
+        ws = workbook.active
+        ws.title = "快递明细"
+        ws.append(headers)
+        for row in rows:
+            ws.append(row)
+        output_path = customer_dir / f"{shipping_date:%Y-%m-%d}_{customer}_快递费明细.xlsx"
+        workbook.save(output_path)
+
     def test_history_workbook_file_name_includes_customer_name(self) -> None:
         self.assertEqual(customer_history_summary_file_name("客户A"), "客户A_客户快递费历史汇总.xlsx")
 
@@ -127,7 +144,7 @@ class CustomerHistoryWorkbookTest(unittest.TestCase):
             self.assertEqual(detail_sheet["E2"].value, 120.5)
             self.assertEqual(detail_sheet["G1"].value, "历史记录Key")
             self.assertTrue(detail_sheet.column_dimensions["G"].hidden)
-            self.assertEqual(detail_sheet["G2"].value, "CK001|2026-04-02 00:00:00")
+            self.assertEqual(detail_sheet["G2"].value, "CK001|2026-04-02 00:00:00|")
             self.assertEqual(detail_sheet["I1"].value, "最后更新时间")
             self.assert_cell_has_thin_border(detail_sheet["A1"])
             self.assert_cell_has_thin_border(detail_sheet["I2"])
@@ -211,6 +228,126 @@ class CustomerHistoryWorkbookTest(unittest.TestCase):
             self.assertEqual(detail_sheet["E3"].value, 88.0)
             self.assertNotEqual(detail_sheet["H2"].value, None)
             self.assertNotEqual(detail_sheet["I2"].value, None)
+
+    def test_history_detail_keeps_same_order_time_with_different_shipped_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            customer_dir = Path(temp_dir) / "客户A"
+            customer_dir.mkdir()
+            shipping_date = date(2026, 4, 2)
+            self._write_daily_detail_rows(
+                customer_dir,
+                "客户A",
+                shipping_date,
+                ["出库单号", "出库日期", "业务员", "已发货", "重量", "快递费用", "快递公司（标准版）"],
+                [
+                    ["CK001", shipping_date, "客户A", "是", 2.5, 120.5, "顺丰"],
+                    ["CK001", shipping_date, "客户A", "退货/换货", 2.5, -120.5, "顺丰"],
+                ],
+            )
+
+            build_customer_history_summary(customer_dir, build_default_rule_config())
+
+            refreshed = openpyxl.load_workbook(
+                customer_dir / customer_history_summary_file_name("客户A"),
+                data_only=False,
+            )
+            detail_sheet = refreshed[HISTORY_DETAIL_SHEET]
+            headers = [
+                detail_sheet.cell(row=1, column=column).value
+                for column in range(1, detail_sheet.max_column + 1)
+            ]
+            shipped_status_col = headers.index("已发货") + 1
+            key_col = headers.index("历史记录Key") + 1
+
+            self.assertEqual(detail_sheet.max_row, 3)
+            self.assertEqual(detail_sheet.cell(row=2, column=shipped_status_col).value, "是")
+            self.assertEqual(detail_sheet.cell(row=3, column=shipped_status_col).value, "退货/换货")
+            self.assertEqual(detail_sheet.cell(row=2, column=key_col).value, "CK001|2026-04-02 00:00:00|是")
+            self.assertEqual(
+                detail_sheet.cell(row=3, column=key_col).value,
+                "CK001|2026-04-02 00:00:00|退货/换货",
+            )
+
+    def test_existing_manual_return_record_survives_refresh_with_legacy_hidden_key(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            customer_dir = Path(temp_dir) / "客户A"
+            customer_dir.mkdir()
+            shipping_date = date(2026, 4, 2)
+            history_path = customer_dir / customer_history_summary_file_name("客户A")
+
+            history_workbook = openpyxl.Workbook()
+            history_sheet = history_workbook.active
+            history_sheet.title = HISTORY_DETAIL_SHEET
+            history_sheet.append(
+                [
+                    "出库单号",
+                    "出库日期",
+                    "业务员",
+                    "已发货",
+                    "重量",
+                    "快递费用",
+                    "快递公司（标准版）",
+                    "历史记录Key",
+                    "首次导入时间",
+                    "最后更新时间",
+                    "来源明细文件",
+                    "来源行号",
+                ]
+            )
+            history_sheet.append(
+                [
+                    "CK001",
+                    shipping_date,
+                    "客户A",
+                    "退货/换货",
+                    2.5,
+                    -120.5,
+                    "顺丰",
+                    "CK001|2026-04-02 00:00:00",
+                    "2026-04-03 09:00:00",
+                    "2026-04-03 09:00:00",
+                    "手动登记",
+                    2,
+                ]
+            )
+            history_workbook.save(history_path)
+
+            self._write_daily_detail_rows(
+                customer_dir,
+                "客户A",
+                shipping_date,
+                ["出库单号", "出库日期", "业务员", "已发货", "重量", "快递费用", "快递公司（标准版）"],
+                [["CK001", shipping_date, "客户A", "是", 2.5, 120.5, "顺丰"]],
+            )
+
+            build_customer_history_summary(customer_dir, build_default_rule_config())
+
+            refreshed = openpyxl.load_workbook(history_path, data_only=False)
+            detail_sheet = refreshed[HISTORY_DETAIL_SHEET]
+            headers = [
+                detail_sheet.cell(row=1, column=column).value
+                for column in range(1, detail_sheet.max_column + 1)
+            ]
+            shipped_status_col = headers.index("已发货") + 1
+            key_col = headers.index("历史记录Key") + 1
+            statuses = [
+                detail_sheet.cell(row=row, column=shipped_status_col).value
+                for row in range(2, detail_sheet.max_row + 1)
+            ]
+            keys = [
+                detail_sheet.cell(row=row, column=key_col).value
+                for row in range(2, detail_sheet.max_row + 1)
+            ]
+
+            self.assertEqual(detail_sheet.max_row, 3)
+            self.assertEqual(statuses, ["退货/换货", "是"])
+            self.assertEqual(
+                keys,
+                [
+                    "CK001|2026-04-02 00:00:00|退货/换货",
+                    "CK001|2026-04-02 00:00:00|是",
+                ],
+            )
 
 
 if __name__ == "__main__":

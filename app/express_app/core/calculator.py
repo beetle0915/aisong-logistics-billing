@@ -53,6 +53,7 @@ DEFAULT_SPLIT_DIR = DEFAULT_ROOT / "客户每日快递费明细"
 STANDARD_EXPRESS_COLUMN = "快递公司（标准版）"
 RAW_EXPRESS_COLUMN = "快递公司"
 SHIPPING_DATE_COLUMN = "出库日期"
+SHIPPED_STATUS_COLUMN = "已发货"
 
 REQUIRED_SALES_COLUMNS = [SHIPPING_DATE_COLUMN, "业务员", RAW_EXPRESS_COLUMN, "省", "重量"]
 PRICE_VERSION_COLUMN = "报价版本"
@@ -430,12 +431,17 @@ def parse_shipping_datetime(value: Any) -> datetime:
         raise ValueError(f"出库日期无法解析：{value}") from exc
 
 
-def build_historical_detail_key(outbound_number: Any, shipping_time: Any) -> str:
+def build_historical_detail_key(
+    outbound_number: Any,
+    shipping_time: Any,
+    shipped_status: Any = None,
+) -> str:
     outbound_text = normalize_text(outbound_number)
     if not outbound_text:
         raise ValueError("出库单号为空")
     shipping_datetime = parse_shipping_datetime(shipping_time)
-    return f"{outbound_text}|{shipping_datetime:%Y-%m-%d %H:%M:%S}"
+    shipped_text = normalize_text(shipped_status)
+    return f"{outbound_text}|{shipping_datetime:%Y-%m-%d %H:%M:%S}|{shipped_text}"
 
 
 def sanitize_filename(value: Any) -> str:
@@ -2239,6 +2245,7 @@ def read_existing_history_detail_rows(
         last_updated_index = system_start_index + 2
         source_file_index = system_start_index + 3
         source_row_index = system_start_index + 4
+        header_map = {header: index for index, header in enumerate(visible_headers) if header}
 
         detail_rows: dict[str, HistoricalDetailRow] = {}
         for row_values_tuple in rows:
@@ -2246,17 +2253,24 @@ def read_existing_history_detail_rows(
             if all(value in (None, "") for value in row_values):
                 continue
             record_key = normalize_text(row_values[key_index] if key_index < len(row_values) else None)
-            if not record_key:
-                header_map = {header: index for index, header in enumerate(visible_headers) if header}
-                if "出库单号" not in header_map or SHIPPING_DATE_COLUMN not in header_map:
-                    continue
+            if "出库单号" in header_map and SHIPPING_DATE_COLUMN in header_map:
+                shipped_status_index = header_map.get(SHIPPED_STATUS_COLUMN)
+                shipped_status = (
+                    row_values[shipped_status_index]
+                    if shipped_status_index is not None and shipped_status_index < len(row_values)
+                    else None
+                )
                 try:
                     record_key = build_historical_detail_key(
                         row_values[header_map["出库单号"]],
                         row_values[header_map[SHIPPING_DATE_COLUMN]],
+                        shipped_status,
                     )
                 except ValueError:
-                    continue
+                    if not record_key:
+                        continue
+            elif not record_key:
+                continue
 
             detail_rows[record_key] = HistoricalDetailRow(
                 visible_values=row_values[:system_start_index],
@@ -2344,9 +2358,16 @@ def load_daily_detail_rows_for_history(
                 if all(value in (None, "") for value in row_values):
                     continue
                 try:
+                    shipped_status_index = header_map.get(SHIPPED_STATUS_COLUMN)
+                    shipped_status = (
+                        row_values[shipped_status_index]
+                        if shipped_status_index is not None and shipped_status_index < len(row_values)
+                        else None
+                    )
                     record_key = build_historical_detail_key(
                         row_values[header_map["出库单号"]],
                         row_values[header_map[SHIPPING_DATE_COLUMN]],
+                        shipped_status,
                     )
                 except ValueError as exc:
                     errors.append(f"{detail_file.name} 第 {row_number} 行：{exc}")
