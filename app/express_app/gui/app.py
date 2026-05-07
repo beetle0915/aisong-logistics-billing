@@ -18,6 +18,15 @@ from express_app.core.account_balance import (
     CustomerBalanceRecord,
     collect_account_balance_dashboard,
 )
+from express_app.core.bill_splitter import (
+    BillSplitResult,
+    BillSplitScanResult,
+    BILL_DETAIL_SHEET_NAME,
+    DEFAULT_SPLIT_FIELD,
+    build_bill_split_output_dir,
+    scan_bill_split_directory,
+    split_bills_by_field,
+)
 from express_app.core.license_key import normalize_license_key, verify_license_key
 from express_app.core.calculator import (
     DEFAULT_OUTPUT_DIR,
@@ -56,6 +65,8 @@ V8_1_WORKFLOW_STEPS = ("配置", "运行", "结果")
 V8_2_ENABLED_NAV_ITEMS = ("费用计算", "系统设置")
 V8_3_ENABLED_NAV_ITEMS = ("费用计算", "账户余额", "系统设置")
 V8_4_ENABLED_NAV_ITEMS = ("费用计算", "账户余额", "报价预览", "系统设置")
+V8_9_MAIN_NAV_ITEMS = ("费用计算", "账户余额", "报价预览", "拆分账单", "系统设置")
+V8_9_ENABLED_NAV_ITEMS = V8_9_MAIN_NAV_ITEMS
 V8_2_SETTINGS_SECTIONS = ("目录配置", "精准映射", "关键词映射", "大件规则")
 V8_2_1_WORKFLOW_STEPS = (
     ("config", "配置"),
@@ -87,6 +98,32 @@ V8_4_PRICE_TEMPLATE_COLUMN_IDS = (
     "extra_price_right",
 )
 V8_4_PRICE_TEMPLATE_COLUMNS = ("省份", "首重费用", "续重费用", "省份", "首重费用", "续重费用")
+V8_9_BILL_SPLIT_WORKFLOW_STEPS = (
+    ("config", "配置"),
+    ("run", "运行"),
+    ("results", "结果"),
+)
+V8_9_BILL_SPLIT_CONFIG_PAGE_SECTIONS = ("账单目录", "待拆分文件")
+V8_9_BILL_SPLIT_RUN_PAGE_SECTIONS = ("运行状态", "运行日志")
+V8_9_BILL_SPLIT_RESULTS_PAGE_SECTIONS = ("拆分结果",)
+V8_9_BILL_SPLIT_PAGE_SECTIONS = ("配置", "运行", "结果")
+V8_9_BILL_SPLIT_ACTIONS = ("选择目录", "同步字段", "开始测试", "开始拆分", "打开输出目录", "打开选中文件")
+V8_9_BILL_SPLIT_CONFIG_PAGE_ACTIONS = ("选择目录", "同步字段", "开始测试")
+V8_9_BILL_SPLIT_RUN_PAGE_ACTIONS = ("开始拆分",)
+V8_9_BILL_SPLIT_RESULTS_PAGE_ACTIONS = ("打开输出目录", "打开选中文件")
+V8_9_BILL_SPLIT_AUTO_WORKFLOW_TRANSITIONS = {
+    "on_test_start": "run",
+    "on_test_done": "run",
+    "on_split_start": "run",
+    "on_split_done": "results",
+}
+V8_9_BILL_SPLIT_DEFAULT_FIELD = DEFAULT_SPLIT_FIELD
+V8_9_BILL_SPLIT_TARGET_SHEET_NAME = BILL_DETAIL_SHEET_NAME
+V8_9_BILL_SPLIT_OUTPUT_DIR_SUFFIX = "拆分结果"
+V8_9_BILL_SPLIT_FILE_COLUMN_IDS = ("name", "sheet", "rows", "field_status", "path")
+V8_9_BILL_SPLIT_FILE_COLUMNS = ("文件名", "账单明细", "数据行", "字段状态", "路径")
+V8_9_BILL_SPLIT_RESULT_COLUMN_IDS = ("split_value", "name", "rows", "status", "path")
+V8_9_BILL_SPLIT_RESULT_COLUMNS = ("拆分值", "文件名", "行数", "状态", "路径")
 SETTINGS_TOP_TAB_STYLE = "SettingsTop.TNotebook"
 PRICE_PREVIEW_COMBO_STYLE = "PricePreview.TCombobox"
 PRICE_PREVIEW_NOTEBOOK_STYLE = "PricePreview.TNotebook"
@@ -629,12 +666,16 @@ class ExpressFeeApp(tk.Tk):
         self.nav_labels: dict[str, ttk.Label] = {}
         self.workflow_step_labels: dict[str, ttk.Label] = {}
         self.workflow_pages: dict[str, ttk.Frame] = {}
+        self.active_bill_split_workflow_var = tk.StringVar(value="config")
+        self.bill_split_workflow_step_labels: dict[str, ttk.Label] = {}
+        self.bill_split_workflow_pages: dict[str, ttk.Frame] = {}
         self.preflight_buttons: list[ttk.Button] = []
         self.run_buttons: list[ttk.Button] = []
         self.content_container: ttk.Frame | None = None
         self.fee_page: ttk.Frame | None = None
         self.balance_page: ttk.Frame | None = None
         self.price_preview_page: ttk.Frame | None = None
+        self.bill_splitter_page: ttk.Frame | None = None
         self.settings_page: ttk.Frame | None = None
         self.balance_tree: ttk.Treeview | None = None
         self.balance_status_var = tk.StringVar(value="等待刷新")
@@ -659,6 +700,30 @@ class ExpressFeeApp(tk.Tk):
         self.price_template_combo: ttk.Combobox | None = None
         self.price_template_notebook: ttk.Notebook | None = None
         self.price_template_trees: dict[str, ttk.Treeview] = {}
+        self.bill_split_source_dir_var = tk.StringVar()
+        self.bill_split_output_dir_var = tk.StringVar()
+        self.bill_split_field_var = tk.StringVar(value=V8_9_BILL_SPLIT_DEFAULT_FIELD)
+        self.bill_split_status_var = tk.StringVar(value="等待选择目录")
+        self.bill_split_summary_files_var = tk.StringVar(value="0")
+        self.bill_split_summary_success_var = tk.StringVar(value="0")
+        self.bill_split_summary_failed_var = tk.StringVar(value="0")
+        self.bill_split_summary_outputs_var = tk.StringVar(value="0")
+        self.bill_split_common_headers: list[str] = []
+        self.bill_split_scan_result: BillSplitScanResult | None = None
+        self.bill_split_result_paths: dict[str, Path] = {}
+        self.bill_split_buttons: list[ttk.Button] = []
+        self.bill_split_config_buttons: list[ttk.Button] = []
+        self.bill_split_run_buttons: list[ttk.Button] = []
+        self.bill_split_sync_button: ttk.Button | None = None
+        self.bill_split_test_button: ttk.Button | None = None
+        self.bill_split_run_button: ttk.Button | None = None
+        self.bill_split_open_output_button: ttk.Button | None = None
+        self.bill_split_open_selected_button: ttk.Button | None = None
+        self.bill_split_field_combo: ttk.Combobox | None = None
+        self.bill_split_file_tree: ttk.Treeview | None = None
+        self.bill_split_result_file_tree: ttk.Treeview | None = None
+        self.bill_split_result_tree: ttk.Treeview | None = None
+        self.bill_split_log_text: scrolledtext.ScrolledText | None = None
         self.active_settings_section_var = tk.StringVar(value=V8_2_SETTINGS_SECTIONS[0])
         self.settings_section_notebook: ttk.Notebook | None = None
         self.settings_section_pages: dict[str, ttk.Frame] = {}
@@ -1015,8 +1080,8 @@ class ExpressFeeApp(tk.Tk):
             foreground=COLORS["muted"],
             font=("Helvetica Neue", WORKBENCH_LABEL_FONT_SIZE, "bold"),
         ).pack(anchor="w", padx=8, pady=(0, 8))
-        for index, item in enumerate(V8_1_MAIN_NAV_ITEMS):
-            enabled = item in V8_4_ENABLED_NAV_ITEMS
+        for index, item in enumerate(V8_9_MAIN_NAV_ITEMS):
+            enabled = item in V8_9_ENABLED_NAV_ITEMS
             label = ttk.Label(
                 sidebar,
                 text=item if enabled else f"{item}  后续",
@@ -1082,6 +1147,12 @@ class ExpressFeeApp(tk.Tk):
         self.price_preview_page.columnconfigure(0, weight=1)
         self.price_preview_page.rowconfigure(1, weight=1)
         self._build_price_preview_page(self.price_preview_page)
+
+        self.bill_splitter_page = ttk.Frame(self.content_container, style="Content.TFrame")
+        self.bill_splitter_page.grid(row=0, column=0, sticky="nsew")
+        self.bill_splitter_page.columnconfigure(0, weight=1)
+        self.bill_splitter_page.rowconfigure(3, weight=1)
+        self._build_bill_splitter_page(self.bill_splitter_page)
 
         self.settings_page = ttk.Frame(self.content_container, style="Content.TFrame")
         self.settings_page.grid(row=0, column=0, sticky="nsew")
@@ -1648,8 +1719,285 @@ class ExpressFeeApp(tk.Tk):
             wraplength=760,
         ).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
+    def _build_bill_splitter_page(self, content: ttk.Frame) -> None:
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(1, weight=1)
+
+        steps = ttk.Frame(content, style="Content.TFrame")
+        steps.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        self.bill_split_workflow_step_labels.clear()
+        for index, (step_id, step_label) in enumerate(V8_9_BILL_SPLIT_WORKFLOW_STEPS, start=1):
+            style_name = "StepActive.TLabel" if step_id == "config" else "StepIdle.TLabel"
+            label = ttk.Label(
+                steps,
+                text=f"{index}. {step_label}",
+                style=style_name,
+                cursor="hand2",
+            )
+            label.pack(side=tk.LEFT, padx=(0, 8))
+            label.bind(
+                "<Button-1>",
+                lambda _event, target_step=step_id: self._show_bill_split_workflow_step(target_step),
+            )
+            self.bill_split_workflow_step_labels[step_id] = label
+
+        page_container = ttk.Frame(content, style="Content.TFrame")
+        page_container.grid(row=1, column=0, sticky="nsew")
+        page_container.columnconfigure(0, weight=1)
+        page_container.rowconfigure(0, weight=1)
+        self.bill_split_workflow_pages.clear()
+
+        config_page = ttk.Frame(page_container, style="Content.TFrame")
+        config_page.grid(row=0, column=0, sticky="nsew")
+        self._build_bill_split_config_page(config_page)
+        self.bill_split_workflow_pages["config"] = config_page
+
+        run_page = ttk.Frame(page_container, style="Content.TFrame")
+        run_page.grid(row=0, column=0, sticky="nsew")
+        self._build_bill_split_run_page(run_page)
+        self.bill_split_workflow_pages["run"] = run_page
+
+        results_page = ttk.Frame(page_container, style="Content.TFrame")
+        results_page.grid(row=0, column=0, sticky="nsew")
+        self._build_bill_split_results_page(results_page)
+        self.bill_split_workflow_pages["results"] = results_page
+
+        self._show_bill_split_workflow_step("config")
+
+    def _build_bill_split_config_page(self, content: ttk.Frame) -> None:
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(1, weight=1)
+
+        control_frame = ttk.LabelFrame(
+            content,
+            text="账单目录",
+            padding=14,
+            style="Panel.TLabelframe",
+        )
+        control_frame.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        control_frame.columnconfigure(1, weight=1)
+        control_frame.columnconfigure(3, weight=1)
+
+        ttk.Label(control_frame, text="源目录", style="Field.TLabel").grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=5,
+        )
+        ttk.Entry(
+            control_frame,
+            textvariable=self.bill_split_source_dir_var,
+            state="readonly",
+        ).grid(row=0, column=1, columnspan=3, sticky="ew", padx=(10, 8), pady=5)
+        choose_button = ttk.Button(
+            control_frame,
+            text="选择目录",
+            command=self._choose_bill_split_dir,
+            style="Secondary.TButton",
+        )
+        choose_button.grid(row=0, column=4, pady=5)
+        self.bill_split_buttons.append(choose_button)
+        self.bill_split_config_buttons.append(choose_button)
+
+        ttk.Label(control_frame, text="输出目录", style="Field.TLabel").grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=5,
+        )
+        ttk.Label(
+            control_frame,
+            textvariable=self.bill_split_output_dir_var,
+            background=COLORS["surface"],
+            foreground=COLORS["muted"],
+            font=("Menlo", 10),
+            wraplength=620,
+        ).grid(row=1, column=1, columnspan=4, sticky="ew", padx=(10, 0), pady=5)
+
+        ttk.Label(control_frame, text="共同字段", style="Field.TLabel").grid(
+            row=2,
+            column=0,
+            sticky="w",
+            pady=5,
+        )
+        self.bill_split_field_combo = ttk.Combobox(
+            control_frame,
+            textvariable=self.bill_split_field_var,
+            values=self.bill_split_common_headers,
+            state="readonly",
+            style=PRICE_PREVIEW_COMBO_STYLE,
+        )
+        self.bill_split_field_combo.grid(row=2, column=1, sticky="ew", padx=(10, 8), pady=5)
+        sync_button = ttk.Button(
+            control_frame,
+            text="同步字段",
+            command=self._sync_bill_split_fields,
+            style="Secondary.TButton",
+            state=tk.DISABLED,
+        )
+        sync_button.grid(row=2, column=2, sticky="e", pady=5, padx=(0, 8))
+        self.bill_split_sync_button = sync_button
+        self.bill_split_buttons.append(sync_button)
+        self.bill_split_config_buttons.append(sync_button)
+
+        scan_button = ttk.Button(
+            control_frame,
+            text="开始测试",
+            command=self._scan_bill_split_dir,
+            style="Primary.TButton",
+            state=tk.DISABLED,
+        )
+        scan_button.grid(row=2, column=3, columnspan=2, sticky="e", pady=5)
+        self.bill_split_test_button = scan_button
+        self.bill_split_buttons.append(scan_button)
+        self.bill_split_config_buttons.append(scan_button)
+
+        file_frame = ttk.LabelFrame(
+            content,
+            text="待拆分文件",
+            padding=8,
+            style="Panel.TLabelframe",
+        )
+        file_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 12))
+        file_frame.rowconfigure(0, weight=1)
+        file_frame.columnconfigure(0, weight=1)
+        self.bill_split_file_tree = self._build_bill_split_file_tree(file_frame)
+        self.bill_split_file_tree.grid(row=0, column=0, sticky="nsew")
+        file_scroll = ttk.Scrollbar(file_frame, orient=tk.VERTICAL, command=self.bill_split_file_tree.yview)
+        file_scroll.grid(row=0, column=1, sticky="ns")
+        self.bill_split_file_tree.configure(yscrollcommand=file_scroll.set)
+
+    def _build_bill_split_run_page(self, content: ttk.Frame) -> None:
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(1, weight=1)
+
+        status_frame = ttk.LabelFrame(
+            content,
+            text="运行状态",
+            padding=14,
+            style="Panel.TLabelframe",
+        )
+        status_frame.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        status_frame.columnconfigure(1, weight=1)
+        ttk.Label(status_frame, text="当前状态", style="Field.TLabel").grid(
+            row=0,
+            column=0,
+            sticky="w",
+        )
+        ttk.Label(status_frame, textvariable=self.bill_split_status_var, style="Status.TLabel").grid(
+            row=0,
+            column=1,
+            sticky="w",
+            padx=(12, 0),
+        )
+        run_button = ttk.Button(
+            status_frame,
+            text="开始拆分",
+            command=self._start_bill_split,
+            style="Primary.TButton",
+            state=tk.DISABLED,
+        )
+        run_button.grid(row=0, column=2, sticky="e")
+        self.bill_split_run_button = run_button
+        self.bill_split_run_buttons.append(run_button)
+
+        log_frame = ttk.LabelFrame(content, text="运行日志", padding=8, style="Panel.TLabelframe")
+        log_frame.grid(row=1, column=0, sticky="nsew")
+        log_frame.rowconfigure(0, weight=1)
+        log_frame.columnconfigure(0, weight=1)
+        self.bill_split_log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=13)
+        self.bill_split_log_text.grid(row=0, column=0, sticky="nsew")
+        self.bill_split_log_text.configure(
+            state=tk.DISABLED,
+            bg=COLORS["log_bg"],
+            fg=COLORS["log_text"],
+            insertbackground=COLORS["log_text"],
+            relief=tk.FLAT,
+            borderwidth=0,
+            font=("Menlo", 10),
+        )
+
+    def _build_bill_split_results_page(self, content: ttk.Frame) -> None:
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(0, weight=1)
+
+        result_frame = ttk.LabelFrame(
+            content,
+            text="拆分结果",
+            padding=8,
+            style="Panel.TLabelframe",
+        )
+        result_frame.grid(row=0, column=0, sticky="nsew")
+        result_frame.rowconfigure(0, weight=1)
+        result_frame.columnconfigure(0, weight=1)
+        self.bill_split_result_tree = ttk.Treeview(
+            result_frame,
+            columns=V8_9_BILL_SPLIT_RESULT_COLUMN_IDS,
+            show="headings",
+            height=6,
+            selectmode="browse",
+        )
+        for column_id, label in zip(V8_9_BILL_SPLIT_RESULT_COLUMN_IDS, V8_9_BILL_SPLIT_RESULT_COLUMNS):
+            self.bill_split_result_tree.heading(column_id, text=label)
+        self.bill_split_result_tree.column("split_value", width=130, minwidth=110, stretch=False)
+        self.bill_split_result_tree.column("name", width=260, minwidth=180, stretch=False)
+        self.bill_split_result_tree.column("rows", width=80, minwidth=70, stretch=False)
+        self.bill_split_result_tree.column("status", width=90, minwidth=80, stretch=False)
+        self.bill_split_result_tree.column("path", width=520, minwidth=260, stretch=True)
+        self.bill_split_result_tree.grid(row=0, column=0, sticky="nsew")
+        self.bill_split_result_tree.bind("<Double-1>", lambda _event: self._open_selected_bill_split_result())
+        result_scroll = ttk.Scrollbar(
+            result_frame,
+            orient=tk.VERTICAL,
+            command=self.bill_split_result_tree.yview,
+        )
+        result_scroll.grid(row=0, column=1, sticky="ns")
+        self.bill_split_result_tree.configure(yscrollcommand=result_scroll.set)
+
+        result_actions = ttk.Frame(result_frame, style="Surface.TFrame")
+        result_actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Label(
+            result_actions,
+            textvariable=self.bill_split_status_var,
+            background=COLORS["surface"],
+            foreground=COLORS["muted"],
+        ).pack(side=tk.LEFT)
+        self.bill_split_open_output_button = ttk.Button(
+            result_actions,
+            text="打开输出目录",
+            command=self._open_bill_split_output_dir,
+            style="Secondary.TButton",
+            state=tk.DISABLED,
+        )
+        self.bill_split_open_output_button.pack(side=tk.RIGHT, padx=(8, 0))
+        self.bill_split_open_selected_button = ttk.Button(
+            result_actions,
+            text="打开选中文件",
+            command=self._open_selected_bill_split_result,
+            style="Secondary.TButton",
+            state=tk.DISABLED,
+        )
+        self.bill_split_open_selected_button.pack(side=tk.RIGHT)
+
+    def _build_bill_split_file_tree(self, parent: ttk.Frame) -> ttk.Treeview:
+        tree = ttk.Treeview(
+            parent,
+            columns=V8_9_BILL_SPLIT_FILE_COLUMN_IDS,
+            show="headings",
+            height=6,
+            selectmode="browse",
+        )
+        for column_id, label in zip(V8_9_BILL_SPLIT_FILE_COLUMN_IDS, V8_9_BILL_SPLIT_FILE_COLUMNS):
+            tree.heading(column_id, text=label)
+        tree.column("name", width=220, minwidth=160, stretch=False)
+        tree.column("sheet", width=90, minwidth=80, stretch=False)
+        tree.column("rows", width=80, minwidth=70, stretch=False)
+        tree.column("field_status", width=140, minwidth=120, stretch=False)
+        tree.column("path", width=480, minwidth=260, stretch=True)
+        return tree
+
     def _show_page(self, nav_item: str) -> None:
-        if nav_item not in V8_4_ENABLED_NAV_ITEMS:
+        if nav_item not in V8_9_ENABLED_NAV_ITEMS:
             return
         self.active_nav_var.set(nav_item)
         for item, label in self.nav_labels.items():
@@ -1669,6 +2017,12 @@ class ExpressFeeApp(tk.Tk):
             self.module_subtitle_var.set("按客户查看报价表模板，快速核对各快递公司、各省份的发货价格。")
             if self.price_preview_page is not None:
                 self.price_preview_page.tkraise()
+        elif nav_item == "拆分账单":
+            self.module_title_var.set("拆分账单")
+            self.module_subtitle_var.set("按账单明细 sheet 拆分 Excel，支持按经手人或共同字段生成独立账单文件。")
+            if self.bill_splitter_page is not None:
+                self.bill_splitter_page.tkraise()
+            self._show_bill_split_workflow_step("config")
         else:
             self.module_title_var.set("费用计算")
             self.module_subtitle_var.set("按配置、运行、结果三个步骤完成快递费用计算和客户明细生成。")
@@ -1682,6 +2036,15 @@ class ExpressFeeApp(tk.Tk):
         for item, label in self.workflow_step_labels.items():
             label.configure(style="StepActive.TLabel" if item == step_id else "StepIdle.TLabel")
         self.workflow_pages[step_id].tkraise()
+
+    def _show_bill_split_workflow_step(self, step_id: str) -> None:
+        pages = self.__dict__.get("bill_split_workflow_pages", {})
+        if step_id not in pages:
+            return
+        self.active_bill_split_workflow_var.set(step_id)
+        for item, label in self.__dict__.get("bill_split_workflow_step_labels", {}).items():
+            label.configure(style="StepActive.TLabel" if item == step_id else "StepIdle.TLabel")
+        pages[step_id].tkraise()
 
     def _show_settings_section(self, section: str) -> None:
         if section not in self.settings_section_pages:
@@ -2105,6 +2468,332 @@ class ExpressFeeApp(tk.Tk):
         left_tree.yview_scroll(units, "units")
         right_tree.yview_scroll(units, "units")
         return "break"
+
+    def _choose_bill_split_dir(self) -> None:
+        initial_dir = self.bill_split_source_dir_var.get().strip() or str(Path.home())
+        path = filedialog.askdirectory(
+            title="选择要拆分的账单目录",
+            initialdir=initial_dir,
+        )
+        if not path:
+            return
+        self.bill_split_source_dir_var.set(path)
+        self._clear_bill_split_log()
+        self._clear_bill_split_results()
+        self._clear_bill_split_file_trees()
+        self.bill_split_scan_result = None
+        self.bill_split_common_headers = []
+        self.bill_split_field_var.set("")
+        source_dir = Path(path).expanduser()
+        output_dir = build_bill_split_output_dir(
+            source_dir,
+            self.bill_split_field_var.get().strip() or V8_9_BILL_SPLIT_DEFAULT_FIELD,
+        )
+        self.bill_split_output_dir_var.set(str(output_dir))
+        self.bill_split_summary_files_var.set("0")
+        self.bill_split_summary_success_var.set("0")
+        self.bill_split_summary_failed_var.set("0")
+        self.bill_split_summary_outputs_var.set("0")
+        self.bill_split_status_var.set("已选择账单目录，等待开始测试")
+        self._configure_bill_split_field_combo()
+        self._append_bill_split_log(f"已选择账单目录：{path}\n点击开始测试读取共同表头。")
+        self._update_bill_split_action_state()
+
+    def _scan_bill_split_dir(self) -> None:
+        scan = self._read_bill_split_scan("开始测试")
+        if scan is None:
+            return
+        self._show_bill_split_workflow_step(V8_9_BILL_SPLIT_AUTO_WORKFLOW_TRANSITIONS["on_test_start"])
+        self._apply_bill_split_scan_result(scan)
+
+    def _sync_bill_split_fields(self) -> None:
+        scan = self._read_bill_split_scan("同步字段")
+        if scan is None:
+            return
+        self._apply_bill_split_scan_result(scan, workflow_step="config")
+        self._append_bill_split_log("同步字段完成")
+
+    def _read_bill_split_scan(self, action_label: str) -> BillSplitScanResult | None:
+        source_dir = self._get_bill_split_source_dir()
+        if source_dir is None:
+            return None
+        self._clear_bill_split_results()
+        self.bill_split_status_var.set(f"{action_label}：读取共同表头中")
+        self._append_bill_split_log(f"{action_label}：{source_dir}")
+        try:
+            scan = scan_bill_split_directory(source_dir, self.bill_split_field_var.get().strip() or V8_9_BILL_SPLIT_DEFAULT_FIELD)
+        except Exception as exc:  # GUI boundary: show scan failure.
+            self.bill_split_status_var.set("读取表头失败")
+            self._append_bill_split_log(f"读取表头失败：{exc}")
+            messagebox.showerror("读取表头失败", str(exc))
+            return None
+        return scan
+
+    def _apply_bill_split_scan_result(self, scan: BillSplitScanResult, workflow_step: str | None = None) -> None:
+        self.bill_split_scan_result = scan
+        self.bill_split_common_headers = list(scan.common_headers)
+        self.bill_split_output_dir_var.set(str(scan.output_dir))
+        self.bill_split_summary_files_var.set(str(len(scan.files)))
+        self.bill_split_summary_success_var.set("0")
+        failed_file_count = sum(1 for file_scan in scan.files if file_scan.error)
+        self.bill_split_summary_failed_var.set(str(len(scan.errors) + failed_file_count))
+        self.bill_split_summary_outputs_var.set("0")
+        self._configure_bill_split_field_combo()
+        self._refresh_bill_split_file_tree(scan)
+        if scan.logs:
+            self._append_bill_split_log("\n".join(scan.logs))
+        if scan.errors:
+            self.bill_split_status_var.set("读取完成，但存在问题，请查看拆分日志")
+            self._append_bill_split_log("\n".join(scan.errors))
+        elif scan.files:
+            if workflow_step == "config":
+                self.bill_split_status_var.set(f"已同步共同字段：{len(scan.common_headers)} 个字段")
+            else:
+                split_field = self.bill_split_field_var.get().strip() or V8_9_BILL_SPLIT_DEFAULT_FIELD
+                self.bill_split_status_var.set(f"已通过按【{split_field}】拆分字段的测试，可进行【开始拆分】")
+        else:
+            self.bill_split_status_var.set("当前目录没有可拆分的 Excel 文件")
+        self._update_bill_split_action_state()
+        self._show_bill_split_workflow_step(workflow_step or V8_9_BILL_SPLIT_AUTO_WORKFLOW_TRANSITIONS["on_test_done"])
+
+    def _configure_bill_split_field_combo(self) -> None:
+        combo = self.__dict__.get("bill_split_field_combo")
+        if combo is not None:
+            combo.configure(values=self.bill_split_common_headers)
+        current_field = self.bill_split_field_var.get().strip()
+        if current_field in self.bill_split_common_headers:
+            return
+        if V8_9_BILL_SPLIT_DEFAULT_FIELD in self.bill_split_common_headers:
+            self.bill_split_field_var.set(V8_9_BILL_SPLIT_DEFAULT_FIELD)
+        else:
+            self.bill_split_field_var.set(self.bill_split_common_headers[0] if self.bill_split_common_headers else "")
+
+    def _clear_bill_split_file_trees(self) -> None:
+        for tree_name in ("bill_split_file_tree", "bill_split_result_file_tree"):
+            tree = self.__dict__.get(tree_name)
+            if tree is None:
+                continue
+            for item_id in tree.get_children():
+                tree.delete(item_id)
+
+    def _refresh_bill_split_file_tree(self, scan: BillSplitScanResult) -> None:
+        for tree_name in ("bill_split_file_tree", "bill_split_result_file_tree"):
+            self._populate_bill_split_file_tree(self.__dict__.get(tree_name), scan)
+
+    def _populate_bill_split_file_tree(self, tree, scan: BillSplitScanResult) -> None:
+        if tree is None:
+            return
+        for item_id in tree.get_children():
+            tree.delete(item_id)
+        selected_field = self.bill_split_field_var.get().strip()
+        for file_scan in scan.files:
+            if file_scan.error:
+                if file_scan.error.startswith("读取失败"):
+                    sheet_status = "读取失败"
+                elif "缺少" in file_scan.error:
+                    sheet_status = "缺失"
+                else:
+                    sheet_status = "已跳过"
+                field_status = file_scan.error
+            else:
+                sheet_status = "已找到"
+                has_field = selected_field in file_scan.headers if selected_field else False
+                field_status = "可拆分" if has_field else f"缺少{selected_field or '字段'}"
+            tree.insert(
+                "",
+                tk.END,
+                values=(
+                    file_scan.path.name,
+                    sheet_status,
+                    str(file_scan.total_rows),
+                    field_status,
+                    str(file_scan.path),
+                ),
+            )
+
+    def _start_bill_split(self) -> None:
+        if self._worker and self._worker.is_alive():
+            messagebox.showinfo("正在运行", "当前任务还在运行，请稍等。")
+            return
+        source_dir = self._get_bill_split_source_dir()
+        if source_dir is None:
+            return
+        split_field = self.bill_split_field_var.get().strip()
+        if not split_field:
+            messagebox.showwarning("字段为空", "请选择拆分字段。")
+            return
+        if self.bill_split_common_headers and split_field not in self.bill_split_common_headers:
+            messagebox.showwarning("字段缺失", f"所选字段不在共同表头中：{split_field}")
+            return
+
+        self._clear_bill_split_results()
+        self.bill_split_summary_success_var.set("0")
+        self.bill_split_summary_failed_var.set("0")
+        self.bill_split_summary_outputs_var.set("0")
+        self.bill_split_status_var.set("拆分中")
+        self.status_var.set("拆分账单中")
+        self._append_bill_split_log(f"开始拆分：{source_dir}，字段：{split_field}")
+        self._show_bill_split_workflow_step(V8_9_BILL_SPLIT_AUTO_WORKFLOW_TRANSITIONS["on_split_start"])
+        self._set_bill_split_controls_state(tk.DISABLED)
+
+        self._worker = threading.Thread(
+            target=self._run_bill_split_worker,
+            args=(source_dir, split_field),
+            daemon=True,
+        )
+        self._worker.start()
+        self.after(100, self._poll_queue)
+
+    def _run_bill_split_worker(self, source_dir: Path, split_field: str) -> None:
+        try:
+            result = split_bills_by_field(source_dir, split_field)
+        except Exception as exc:  # GUI boundary: show unexpected errors to user.
+            self._queue.put(("bill_split_error", exc))
+        else:
+            self._queue.put(("bill_split_done", result))
+
+    def _apply_bill_split_result(self, result: BillSplitResult) -> None:
+        self.bill_split_output_dir_var.set(str(result.output_dir))
+        successful_files, failed_files = self._bill_split_source_file_counts()
+        self.bill_split_summary_success_var.set(str(successful_files))
+        self.bill_split_summary_failed_var.set(str(failed_files))
+        self.bill_split_summary_outputs_var.set(str(len(result.output_paths)))
+        self._populate_bill_split_result_table(result)
+        self.bill_split_status_var.set(f"拆分完成：生成 {len(result.output_paths)} 个文件")
+        self._append_bill_split_log(self._format_bill_split_completion_summary(result))
+        self._update_bill_split_action_state()
+        self._show_bill_split_workflow_step(V8_9_BILL_SPLIT_AUTO_WORKFLOW_TRANSITIONS["on_split_done"])
+
+    def _bill_split_source_file_counts(self) -> tuple[int, int]:
+        scan = self.__dict__.get("bill_split_scan_result")
+        if scan is None:
+            return (0, 0)
+        files = getattr(scan, "files", [])
+        failed_files = sum(1 for file_scan in files if getattr(file_scan, "error", ""))
+        return (len(files) - failed_files, failed_files + len(getattr(scan, "errors", [])))
+
+    def _populate_bill_split_result_table(self, result: BillSplitResult) -> None:
+        self._clear_bill_split_results()
+        for output in result.outputs:
+            path = output.output_path
+            item_id = f"bill-split-result-{len(self.bill_split_result_paths) + 1}"
+            self.bill_split_result_paths[item_id] = path
+            self.bill_split_result_tree.insert(
+                "",
+                tk.END,
+                iid=item_id,
+                values=(output.split_value, path.name, str(output.row_count), "成功", str(path)),
+            )
+        if self.bill_split_result_tree is not None:
+            first_item = self.bill_split_result_tree.get_children()
+            if first_item:
+                self.bill_split_result_tree.selection_set(first_item[0])
+        if self.bill_split_open_selected_button is not None and result.output_paths:
+            self.bill_split_open_selected_button.configure(state=tk.NORMAL)
+
+    def _format_bill_split_completion_summary(self, result: BillSplitResult) -> str:
+        lines = [
+            "拆分完成：",
+            f"输出目录：{result.output_dir}",
+            f"共同字段：{len(result.common_headers)} 个",
+            f"生成文件：{len(result.output_paths)} 个",
+        ]
+        lines.extend(f"生成：{path.name}" for path in result.output_paths)
+        return "\n".join(lines)
+
+    def _clear_bill_split_results(self) -> None:
+        self.bill_split_result_paths.clear()
+        tree = self.__dict__.get("bill_split_result_tree")
+        if tree is not None:
+            for item_id in tree.get_children():
+                tree.delete(item_id)
+        if self.__dict__.get("bill_split_open_selected_button") is not None:
+            self.bill_split_open_selected_button.configure(state=tk.DISABLED)
+
+    def _get_bill_split_source_dir(self) -> Path | None:
+        source_dir_text = self.bill_split_source_dir_var.get().strip()
+        if not source_dir_text:
+            messagebox.showwarning("路径错误", "请选择账单目录。")
+            return None
+        source_dir = Path(source_dir_text).expanduser()
+        if not source_dir.exists() or not source_dir.is_dir():
+            messagebox.showwarning("目录无效", f"账单目录不存在或不可读取：\n{source_dir}")
+            return None
+        return source_dir
+
+    def _set_bill_split_controls_state(self, state: str) -> None:
+        for button in self.bill_split_buttons:
+            button.configure(state=state)
+        if self.bill_split_run_button is not None:
+            self.bill_split_run_button.configure(state=state)
+        if self.bill_split_field_combo is not None:
+            self.bill_split_field_combo.configure(state="disabled" if state == tk.DISABLED else "readonly")
+
+    def _update_bill_split_action_state(self) -> None:
+        has_source_dir = bool(self.bill_split_source_dir_var.get().strip())
+        has_files = bool(self.bill_split_scan_result and self.bill_split_scan_result.files)
+        has_field = bool(self.bill_split_field_var.get().strip())
+        has_errors = bool(self.bill_split_scan_result and self.bill_split_scan_result.errors)
+        for button in self.bill_split_buttons:
+            button.configure(state=tk.NORMAL if has_source_dir else tk.DISABLED)
+        if self.bill_split_run_button is not None:
+            self.bill_split_run_button.configure(
+                state=tk.NORMAL if has_source_dir and has_files and has_field and not has_errors else tk.DISABLED
+            )
+        if self.bill_split_open_output_button is not None:
+            self.bill_split_open_output_button.configure(
+                state=tk.NORMAL if self.bill_split_output_dir_var.get().strip() else tk.DISABLED
+            )
+        if self.bill_split_field_combo is not None:
+            self.bill_split_field_combo.configure(state="readonly" if self.bill_split_common_headers else "disabled")
+
+    def _append_bill_split_log(self, text: str) -> None:
+        log_text = self.bill_split_log_text
+        if log_text is None:
+            return
+        log_text.configure(state=tk.NORMAL)
+        if log_text.index("end-1c") != "1.0":
+            log_text.insert(tk.END, "\n")
+        log_text.insert(tk.END, text)
+        log_text.see(tk.END)
+        log_text.configure(state=tk.DISABLED)
+
+    def _clear_bill_split_log(self) -> None:
+        log_text = self.bill_split_log_text
+        if log_text is None:
+            return
+        log_text.configure(state=tk.NORMAL)
+        log_text.delete("1.0", tk.END)
+        log_text.configure(state=tk.DISABLED)
+
+    def _open_bill_split_output_dir(self) -> None:
+        value = self.bill_split_output_dir_var.get().strip()
+        if not value:
+            messagebox.showinfo("未选择输出目录", "请先选择账单目录。")
+            return
+        path = Path(value).expanduser()
+        if not path.exists():
+            messagebox.showwarning("目录不存在", f"输出目录尚未生成：\n{path}")
+            return
+        self._open_existing_path(path)
+
+    def _get_selected_bill_split_result_path(self) -> Path | None:
+        if self.bill_split_result_tree is None:
+            return None
+        selection = self.bill_split_result_tree.selection()
+        if not selection:
+            messagebox.showinfo("未选择文件", "请先在拆分结果中选择一个文件。")
+            return None
+        return self.bill_split_result_paths.get(selection[0])
+
+    def _open_selected_bill_split_result(self) -> None:
+        path = self._get_selected_bill_split_result_path()
+        if path is None:
+            return
+        if not path.exists():
+            messagebox.showwarning("文件不存在", f"文件不存在：\n{path}")
+            return
+        self._open_existing_path(path)
 
     def _pair_price_template_rows(self, rows) -> list[tuple[str, str, str, str, str, str]]:
         display_rows = [self._format_price_template_display_row(row) for row in rows]
@@ -2732,6 +3421,24 @@ class ExpressFeeApp(tk.Tk):
                 self._set_run_buttons_state(tk.NORMAL)
                 self._show_workflow_step("run")
                 messagebox.showerror("运行失败", str(payload))
+            elif kind == "bill_split_done":
+                handled_terminal_event = True
+                result = payload
+                assert isinstance(result, BillSplitResult)
+                self._apply_bill_split_result(result)
+                self.status_var.set("拆分完成")
+                self._set_bill_split_controls_state(tk.NORMAL)
+                self._update_bill_split_action_state()
+                messagebox.showinfo("拆分完成", "账单拆分已完成。")
+            elif kind == "bill_split_error":
+                handled_terminal_event = True
+                self._append_bill_split_log(f"拆分失败：{payload}")
+                self.bill_split_status_var.set("拆分失败，请查看拆分日志")
+                self.status_var.set("拆分失败")
+                self.bill_split_summary_failed_var.set("1")
+                self._set_bill_split_controls_state(tk.NORMAL)
+                self._update_bill_split_action_state()
+                messagebox.showerror("拆分失败", str(payload))
 
         if not handled_terminal_event and self._worker and self._worker.is_alive():
             self.after(100, self._poll_queue)
