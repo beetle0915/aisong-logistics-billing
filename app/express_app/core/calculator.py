@@ -75,6 +75,9 @@ CUSTOMER_HISTORY_DETAIL_SHEET = "快递明细"
 CUSTOMER_PAYMENT_SHEET = "收款记录"
 CUSTOMER_PAYMENT_HEADERS = ["支付时间", "支付方式", "收款人", "已付金额", "收款时间"]
 CUSTOMER_PAYMENT_MIN_ROWS = 20
+CUSTOMER_ABNORMAL_DEDUCTION_SHEET = "异常扣款记录"
+CUSTOMER_ABNORMAL_DEDUCTION_HEADERS = ["扣款时间", "额度", "备注"]
+CUSTOMER_ABNORMAL_DEDUCTION_MIN_ROWS = 20
 CUSTOMER_HISTORY_DETAIL_SYSTEM_HEADERS = [
     "历史记录Key",
     "首次导入时间",
@@ -2080,6 +2083,8 @@ def write_customer_history_sheet(
         "累计快递费用",
         "今日收款",
         "累计收款",
+        "今日异常扣款",
+        "累计异常扣款",
         "当前余额",
         "顺丰单数",
         "申通单数",
@@ -2124,7 +2129,17 @@ def write_customer_history_sheet(
                     f'\'{CUSTOMER_PAYMENT_SHEET}\'!$A:$A,"<"&A{row_number}+1,'
                     f'\'{CUSTOMER_PAYMENT_SHEET}\'!$A:$A,"<>")'
                 ),
-                f"=G{row_number}-E{row_number}",
+                (
+                    f'=SUMIFS(\'{CUSTOMER_ABNORMAL_DEDUCTION_SHEET}\'!$B:$B,'
+                    f'\'{CUSTOMER_ABNORMAL_DEDUCTION_SHEET}\'!$A:$A,">="&A{row_number},'
+                    f'\'{CUSTOMER_ABNORMAL_DEDUCTION_SHEET}\'!$A:$A,"<"&A{row_number}+1)'
+                ),
+                (
+                    f'=SUMIFS(\'{CUSTOMER_ABNORMAL_DEDUCTION_SHEET}\'!$B:$B,'
+                    f'\'{CUSTOMER_ABNORMAL_DEDUCTION_SHEET}\'!$A:$A,"<"&A{row_number}+1,'
+                    f'\'{CUSTOMER_ABNORMAL_DEDUCTION_SHEET}\'!$A:$A,"<>")'
+                ),
+                f"=G{row_number}-E{row_number}-I{row_number}",
                 daily.sf_count,
                 daily.st_count,
                 daily.db_count,
@@ -2136,13 +2151,14 @@ def write_customer_history_sheet(
             cell.fill = fills[color_index]
             cell.alignment = Alignment(vertical="center")
         ws.cell(row=row_number, column=1).number_format = "yyyy-mm-dd"
-        for column in (4, 5, 6, 7, 8):
+        for column in (4, 5, 6, 7, 8, 9, 10):
             ws.cell(row=row_number, column=column).number_format = "0.00"
         ws.cell(row=row_number, column=4).fill = expense_fill
         ws.cell(row=row_number, column=6).fill = income_fill
-        for column in (4, 5, 6, 7, 8):
+        ws.cell(row=row_number, column=8).fill = expense_fill
+        for column in (4, 5, 6, 7, 8, 9, 10):
             ws.cell(row=row_number, column=column).font = Font(bold=True)
-        for column in (5, 7, 8):
+        for column in (5, 7, 9, 10):
             ws.cell(row=row_number, column=column).fill = highlight_fill
 
     apply_sheet_basics(ws)
@@ -2155,10 +2171,12 @@ def write_customer_history_sheet(
         "F": 16,
         "G": 16,
         "H": 16,
-        "I": 12,
-        "J": 12,
+        "I": 16,
+        "J": 16,
         "K": 12,
         "L": 12,
+        "M": 12,
+        "N": 12,
     }
     for column_letter, width in history_widths.items():
         ws.column_dimensions[column_letter].width = width
@@ -2464,6 +2482,43 @@ def write_customer_payment_sheet(ws: openpyxl.worksheet.worksheet.Worksheet) -> 
     apply_table_border(ws, max_row=max_row, max_column=len(CUSTOMER_PAYMENT_HEADERS))
 
 
+def write_customer_abnormal_deduction_sheet(
+    ws: openpyxl.worksheet.worksheet.Worksheet,
+) -> None:
+    is_empty_sheet = ws.max_row == 1 and ws.max_column == 1 and ws["A1"].value is None
+    if is_empty_sheet:
+        for column, header in enumerate(CUSTOMER_ABNORMAL_DEDUCTION_HEADERS, start=1):
+            ws.cell(row=1, column=column).value = header
+    elif [
+        ws.cell(row=1, column=column).value
+        for column in range(1, len(CUSTOMER_ABNORMAL_DEDUCTION_HEADERS) + 1)
+    ] != CUSTOMER_ABNORMAL_DEDUCTION_HEADERS:
+        ws.insert_rows(1)
+        for column, header in enumerate(CUSTOMER_ABNORMAL_DEDUCTION_HEADERS, start=1):
+            ws.cell(row=1, column=column).value = header
+
+    style_history_header(ws)
+    max_row = max(ws.max_row, CUSTOMER_ABNORMAL_DEDUCTION_MIN_ROWS)
+    for row_number in range(2, max_row + 1):
+        ws.cell(row=row_number, column=1).number_format = "yyyy-mm-dd"
+        ws.cell(row=row_number, column=2).number_format = "0.00"
+        ws.row_dimensions[row_number].height = 24
+    apply_sheet_basics(ws)
+    deduction_widths = {
+        "A": 14,
+        "B": 14,
+        "C": 32,
+    }
+    for column_letter, width in deduction_widths.items():
+        ws.column_dimensions[column_letter].width = width
+    ws.row_dimensions[1].height = 28
+    apply_table_border(
+        ws,
+        max_row=max_row,
+        max_column=len(CUSTOMER_ABNORMAL_DEDUCTION_HEADERS),
+    )
+
+
 def add_or_preserve_customer_payment_sheet(
     workbook: openpyxl.Workbook,
     existing_summary_paths: list[Path],
@@ -2473,10 +2528,34 @@ def add_or_preserve_customer_payment_sheet(
         if not existing_summary_path.exists():
             continue
         existing_workbook = openpyxl.load_workbook(existing_summary_path, data_only=False)
-        if CUSTOMER_PAYMENT_SHEET in existing_workbook.sheetnames:
-            copy_worksheet_contents(existing_workbook[CUSTOMER_PAYMENT_SHEET], payment_sheet)
-            break
+        try:
+            if CUSTOMER_PAYMENT_SHEET in existing_workbook.sheetnames:
+                copy_worksheet_contents(existing_workbook[CUSTOMER_PAYMENT_SHEET], payment_sheet)
+                break
+        finally:
+            existing_workbook.close()
     write_customer_payment_sheet(payment_sheet)
+
+
+def add_or_preserve_customer_abnormal_deduction_sheet(
+    workbook: openpyxl.Workbook,
+    existing_summary_paths: list[Path],
+) -> None:
+    deduction_sheet = workbook.create_sheet(CUSTOMER_ABNORMAL_DEDUCTION_SHEET)
+    for existing_summary_path in existing_summary_paths:
+        if not existing_summary_path.exists():
+            continue
+        existing_workbook = openpyxl.load_workbook(existing_summary_path, data_only=False)
+        try:
+            if CUSTOMER_ABNORMAL_DEDUCTION_SHEET in existing_workbook.sheetnames:
+                copy_worksheet_contents(
+                    existing_workbook[CUSTOMER_ABNORMAL_DEDUCTION_SHEET],
+                    deduction_sheet,
+                )
+                break
+        finally:
+            existing_workbook.close()
+    write_customer_abnormal_deduction_sheet(deduction_sheet)
 
 
 def build_customer_history_summary(
@@ -2532,6 +2611,7 @@ def build_customer_history_summary(
     write_customer_history_detail_sheet(detail_sheet, visible_headers, detail_rows)
 
     add_or_preserve_customer_payment_sheet(workbook, [output_path, legacy_output_path])
+    add_or_preserve_customer_abnormal_deduction_sheet(workbook, [output_path, legacy_output_path])
 
     workbook.save(output_path)
     return CustomerHistorySummary(

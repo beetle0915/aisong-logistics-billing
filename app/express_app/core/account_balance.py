@@ -10,6 +10,7 @@ from typing import Any
 import openpyxl
 
 from express_app.core.calculator import (
+    CUSTOMER_ABNORMAL_DEDUCTION_SHEET,
     CUSTOMER_HISTORY_SHEET,
     CUSTOMER_PAYMENT_SHEET,
     customer_history_summary_file_name,
@@ -84,40 +85,44 @@ def collect_account_balance_dashboard(split_dir: Path) -> AccountBalanceDashboar
 
 def read_customer_balance_record(customer_dir: Path, history_file: Path) -> CustomerBalanceRecord:
     workbook = openpyxl.load_workbook(history_file, data_only=True, read_only=True)
-    if CUSTOMER_HISTORY_SHEET not in workbook.sheetnames:
-        raise ValueError(f"缺少 sheet：{CUSTOMER_HISTORY_SHEET}")
+    try:
+        if CUSTOMER_HISTORY_SHEET not in workbook.sheetnames:
+            raise ValueError(f"缺少 sheet：{CUSTOMER_HISTORY_SHEET}")
 
-    history_sheet = workbook[CUSTOMER_HISTORY_SHEET]
-    headers = _read_headers(history_sheet)
-    required_headers = ["日期", "累计快递费用"]
-    missing_headers = [header for header in required_headers if header not in headers]
-    if missing_headers:
-        raise ValueError(f"历史汇总缺少列：{'、'.join(missing_headers)}")
+        history_sheet = workbook[CUSTOMER_HISTORY_SHEET]
+        headers = _read_headers(history_sheet)
+        required_headers = ["日期", "累计快递费用"]
+        missing_headers = [header for header in required_headers if header not in headers]
+        if missing_headers:
+            raise ValueError(f"历史汇总缺少列：{'、'.join(missing_headers)}")
 
-    last_date: date | None = None
-    total_consumed = 0.0
-    date_index = headers["日期"]
-    total_fee_index = headers["累计快递费用"]
-    for row in history_sheet.iter_rows(min_row=2, values_only=True):
-        current_date = _parse_date(row[date_index])
-        current_total = _parse_number(row[total_fee_index])
-        if current_date is None and current_total is None:
-            continue
-        if current_date is not None:
-            last_date = current_date
-        if current_total is not None:
-            total_consumed = current_total
+        last_date: date | None = None
+        total_consumed = 0.0
+        date_index = headers["日期"]
+        total_fee_index = headers["累计快递费用"]
+        for row in history_sheet.iter_rows(min_row=2, values_only=True):
+            current_date = _parse_date(row[date_index])
+            current_total = _parse_number(row[total_fee_index])
+            if current_date is None and current_total is None:
+                continue
+            if current_date is not None:
+                last_date = current_date
+            if current_total is not None:
+                total_consumed = current_total
 
-    total_paid = _sum_payment_records(workbook)
-    return CustomerBalanceRecord(
-        customer=customer_dir.name,
-        total_consumed=round(total_consumed, 2),
-        total_paid=round(total_paid, 2),
-        current_balance=round(total_paid - total_consumed, 2),
-        last_date=last_date,
-        history_file=history_file,
-        customer_dir=customer_dir,
-    )
+        total_paid = _sum_payment_records(workbook)
+        total_abnormal_deducted = _sum_abnormal_deduction_records(workbook)
+        return CustomerBalanceRecord(
+            customer=customer_dir.name,
+            total_consumed=round(total_consumed, 2),
+            total_paid=round(total_paid, 2),
+            current_balance=round(total_paid - total_consumed - total_abnormal_deducted, 2),
+            last_date=last_date,
+            history_file=history_file,
+            customer_dir=customer_dir,
+        )
+    finally:
+        workbook.close()
 
 
 def _read_headers(ws: openpyxl.worksheet.worksheet.Worksheet) -> dict[str, int]:
@@ -132,6 +137,18 @@ def _sum_payment_records(workbook: openpyxl.Workbook) -> float:
     total = 0.0
     for row in payment_sheet.iter_rows(min_row=2, values_only=True):
         amount = _parse_number(row[3] if len(row) > 3 else None)
+        if amount is not None:
+            total += amount
+    return total
+
+
+def _sum_abnormal_deduction_records(workbook: openpyxl.Workbook) -> float:
+    if CUSTOMER_ABNORMAL_DEDUCTION_SHEET not in workbook.sheetnames:
+        return 0.0
+    deduction_sheet = workbook[CUSTOMER_ABNORMAL_DEDUCTION_SHEET]
+    total = 0.0
+    for row in deduction_sheet.iter_rows(min_row=2, values_only=True):
+        amount = _parse_number(row[1] if len(row) > 1 else None)
         if amount is not None:
             total += amount
     return total

@@ -22,6 +22,7 @@ from express_app.core.calculator import (  # noqa: E402
 
 HISTORY_DETAIL_SHEET = "快递明细"
 PAYMENT_SHEET = "收款记录"
+ABNORMAL_DEDUCTION_SHEET = "异常扣款记录"
 LEGACY_HISTORY_FILE = "客户快递费历史汇总.xlsx"
 
 
@@ -84,7 +85,7 @@ class CustomerHistoryWorkbookTest(unittest.TestCase):
             self.assertEqual(summary.output_path, customer_dir / "客户A_客户快递费历史汇总.xlsx")
             self.assertTrue(summary.output_path.exists())
 
-    def test_history_workbook_adds_payment_sheet_and_balance_formulas(self) -> None:
+    def test_history_workbook_adds_payment_and_abnormal_deduction_sheets_and_balance_formulas(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             customer_dir = Path(temp_dir) / "客户A"
             customer_dir.mkdir()
@@ -96,11 +97,19 @@ class CustomerHistoryWorkbookTest(unittest.TestCase):
                 customer_dir / customer_history_summary_file_name("客户A"),
                 data_only=False,
             )
-            self.assertEqual(workbook.sheetnames, [CUSTOMER_HISTORY_SHEET, HISTORY_DETAIL_SHEET, PAYMENT_SHEET])
+            self.assertEqual(
+                workbook.sheetnames,
+                [
+                    CUSTOMER_HISTORY_SHEET,
+                    HISTORY_DETAIL_SHEET,
+                    PAYMENT_SHEET,
+                    ABNORMAL_DEDUCTION_SHEET,
+                ],
+            )
 
             history_sheet = workbook[CUSTOMER_HISTORY_SHEET]
             self.assertEqual(
-                [history_sheet.cell(row=1, column=column).value for column in range(1, 13)],
+                [history_sheet.cell(row=1, column=column).value for column in range(1, 15)],
                 [
                     "日期",
                     "单数",
@@ -109,6 +118,8 @@ class CustomerHistoryWorkbookTest(unittest.TestCase):
                     "累计快递费用",
                     "今日收款",
                     "累计收款",
+                    "今日异常扣款",
+                    "累计异常扣款",
                     "当前余额",
                     "顺丰单数",
                     "申通单数",
@@ -116,13 +127,13 @@ class CustomerHistoryWorkbookTest(unittest.TestCase):
                     "大件单数",
                 ],
             )
-            self.assertIsNone(history_sheet.cell(row=1, column=13).value)
+            self.assertIsNone(history_sheet.cell(row=1, column=15).value)
             self.assertGreaterEqual(history_sheet.row_dimensions[1].height, 28)
             self.assertGreaterEqual(history_sheet.row_dimensions[2].height, 26)
             self.assertGreaterEqual(history_sheet.column_dimensions["D"].width, 18)
-            self.assertGreaterEqual(history_sheet.column_dimensions["H"].width, 16)
+            self.assertGreaterEqual(history_sheet.column_dimensions["J"].width, 16)
             self.assert_cell_has_thin_border(history_sheet["A1"])
-            self.assert_cell_has_thin_border(history_sheet["H2"])
+            self.assert_cell_has_thin_border(history_sheet["J2"])
             self.assertEqual(
                 history_sheet["F2"].value,
                 '=SUMIFS(\'收款记录\'!$D:$D,\'收款记录\'!$A:$A,">="&A2,'
@@ -133,7 +144,17 @@ class CustomerHistoryWorkbookTest(unittest.TestCase):
                 '=SUMIFS(\'收款记录\'!$D:$D,\'收款记录\'!$A:$A,"<"&A2+1,'
                 '\'收款记录\'!$A:$A,"<>")',
             )
-            self.assertEqual(history_sheet["H2"].value, "=G2-E2")
+            self.assertEqual(
+                history_sheet["H2"].value,
+                '=SUMIFS(\'异常扣款记录\'!$B:$B,\'异常扣款记录\'!$A:$A,">="&A2,'
+                '\'异常扣款记录\'!$A:$A,"<"&A2+1)',
+            )
+            self.assertEqual(
+                history_sheet["I2"].value,
+                '=SUMIFS(\'异常扣款记录\'!$B:$B,\'异常扣款记录\'!$A:$A,"<"&A2+1,'
+                '\'异常扣款记录\'!$A:$A,"<>")',
+            )
+            self.assertEqual(history_sheet["J2"].value, "=G2-E2-I2")
 
             detail_sheet = workbook[HISTORY_DETAIL_SHEET]
             self.assertEqual(
@@ -156,6 +177,17 @@ class CustomerHistoryWorkbookTest(unittest.TestCase):
             )
             self.assert_cell_has_thin_border(payment_sheet["A1"])
             self.assert_cell_has_thin_border(payment_sheet["E20"])
+
+            abnormal_deduction_sheet = workbook[ABNORMAL_DEDUCTION_SHEET]
+            self.assertEqual(
+                [abnormal_deduction_sheet.cell(row=1, column=column).value for column in range(1, 4)],
+                ["扣款时间", "额度", "备注"],
+            )
+            self.assert_cell_has_thin_border(abnormal_deduction_sheet["A1"])
+            self.assert_cell_has_thin_border(abnormal_deduction_sheet["C20"])
+            self.assertGreaterEqual(abnormal_deduction_sheet.row_dimensions[1].height, 28)
+            self.assertEqual(abnormal_deduction_sheet["A2"].number_format, "yyyy-mm-dd")
+            self.assertEqual(abnormal_deduction_sheet["B2"].number_format, "0.00")
 
     def test_payment_records_are_preserved_when_history_is_refreshed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -182,6 +214,31 @@ class CustomerHistoryWorkbookTest(unittest.TestCase):
             self.assertEqual(payment_sheet["C2"].value, "小李")
             self.assertEqual(payment_sheet["D2"].value, 5000)
             self.assert_cell_date(payment_sheet["E2"].value, date(2026, 4, 2))
+
+    def test_abnormal_deduction_records_are_preserved_when_history_is_refreshed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            customer_dir = Path(temp_dir) / "客户A"
+            customer_dir.mkdir()
+            self._write_daily_detail(customer_dir, "客户A", date(2026, 4, 2), 120.5)
+
+            workbook = openpyxl.Workbook()
+            ws = workbook.active
+            ws.title = ABNORMAL_DEDUCTION_SHEET
+            ws.append(["扣款时间", "额度", "备注"])
+            ws.append([date(2026, 4, 2), 300, "破损扣款"])
+            workbook.save(customer_dir / CUSTOMER_HISTORY_SUMMARY_FILE)
+
+            build_customer_history_summary(customer_dir, build_default_rule_config())
+
+            refreshed = openpyxl.load_workbook(
+                customer_dir / customer_history_summary_file_name("客户A"),
+                data_only=False,
+            )
+            abnormal_deduction_sheet = refreshed[ABNORMAL_DEDUCTION_SHEET]
+            self.assert_cell_date(abnormal_deduction_sheet["A2"].value, date(2026, 4, 2))
+            self.assertEqual(abnormal_deduction_sheet["B2"].value, 300)
+            self.assertEqual(abnormal_deduction_sheet["C2"].value, "破损扣款")
+            self.assert_cell_has_thin_border(abnormal_deduction_sheet["C20"])
 
     def test_history_detail_upserts_by_outbound_number_and_shipping_time(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

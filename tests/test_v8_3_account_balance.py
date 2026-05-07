@@ -16,6 +16,8 @@ from express_app.core.account_balance import (  # noqa: E402
     collect_account_balance_dashboard,
 )
 from express_app.core.calculator import (  # noqa: E402
+    CUSTOMER_ABNORMAL_DEDUCTION_HEADERS,
+    CUSTOMER_ABNORMAL_DEDUCTION_SHEET,
     CUSTOMER_HISTORY_SHEET,
     CUSTOMER_PAYMENT_HEADERS,
     CUSTOMER_PAYMENT_SHEET,
@@ -30,6 +32,7 @@ class AccountBalanceDashboardTest(unittest.TestCase):
         customer: str,
         rows: list[tuple[date, float]],
         payments: list[tuple[date, float]] | None = None,
+        abnormal_deductions: list[tuple[date, float, str]] | None = None,
     ) -> None:
         workbook = openpyxl.Workbook()
         history_sheet = workbook.active
@@ -55,6 +58,12 @@ class AccountBalanceDashboardTest(unittest.TestCase):
         payment_sheet.append(CUSTOMER_PAYMENT_HEADERS)
         for paid_date, amount in payments or []:
             payment_sheet.append([paid_date, "微信", "小李", amount, paid_date])
+
+        if abnormal_deductions is not None:
+            deduction_sheet = workbook.create_sheet(CUSTOMER_ABNORMAL_DEDUCTION_SHEET)
+            deduction_sheet.append(CUSTOMER_ABNORMAL_DEDUCTION_HEADERS)
+            for deduction_date, amount, remark in abnormal_deductions:
+                deduction_sheet.append([deduction_date, amount, remark])
 
         workbook.save(customer_dir / customer_history_summary_file_name(customer))
 
@@ -97,6 +106,28 @@ class AccountBalanceDashboardTest(unittest.TestCase):
             self.assertEqual(debtor.status, "欠款")
             self.assertEqual(debtor.history_file, customer_b / customer_history_summary_file_name("客户B"))
             self.assertEqual(debtor.customer_dir, customer_b)
+
+    def test_account_balance_deducts_abnormal_deduction_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            split_dir = Path(temp_dir)
+            customer_dir = split_dir / "客户A"
+            customer_dir.mkdir()
+            self._write_history_workbook(
+                customer_dir,
+                "客户A",
+                [(date(2026, 4, 2), 200.0)],
+                [(date(2026, 4, 2), 500.0)],
+                [(date(2026, 4, 2), 80.0, "破损扣款")],
+            )
+
+            dashboard = collect_account_balance_dashboard(split_dir)
+
+            self.assertEqual(dashboard.customer_count, 1)
+            record = dashboard.records[0]
+            self.assertAlmostEqual(record.total_consumed, 200.0)
+            self.assertAlmostEqual(record.total_paid, 500.0)
+            self.assertAlmostEqual(record.current_balance, 220.0)
+            self.assertAlmostEqual(dashboard.total_balance, 220.0)
 
     def test_missing_split_directory_returns_error_dashboard(self) -> None:
         missing_dir = Path("/tmp/aisong-missing-balance-dir")
