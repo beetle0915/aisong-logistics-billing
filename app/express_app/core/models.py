@@ -23,6 +23,9 @@ class ExpressFeeRuleConfig:
     large_piece_companies: set[str] = field(default_factory=set)
     large_piece_threshold_kg: float = 20.0
     large_piece_suffix: str = "_大件"
+    super_large_piece_companies: set[str] = field(default_factory=set)
+    super_large_piece_threshold_kg: float = 60.0
+    super_large_piece_suffix: str = "_超大件"
 
 
 @dataclass(frozen=True)

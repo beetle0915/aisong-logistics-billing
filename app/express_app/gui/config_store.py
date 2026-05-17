@@ -162,11 +162,20 @@ def _rule_config_from_value(value: Any) -> ExpressFeeRuleConfig:
     exact_map = _string_dict_from_value(value.get("exact_company_map"))
     keyword_rules = _keyword_rules_from_value(value.get("keyword_company_rules"))
     large_piece_companies = _string_set_from_value(value.get("large_piece_companies"))
+    super_large_piece_companies = _string_set_from_value(
+        value.get("super_large_piece_companies")
+    )
     suffix_value = value.get("large_piece_suffix")
     large_piece_suffix = (
         suffix_value.strip()
         if isinstance(suffix_value, str) and suffix_value.strip()
         else default.large_piece_suffix
+    )
+    super_suffix_value = value.get("super_large_piece_suffix")
+    super_large_piece_suffix = (
+        super_suffix_value.strip()
+        if isinstance(super_suffix_value, str) and super_suffix_value.strip()
+        else default.super_large_piece_suffix
     )
 
     return ExpressFeeRuleConfig(
@@ -178,6 +187,14 @@ def _rule_config_from_value(value: Any) -> ExpressFeeRuleConfig:
             default.large_piece_threshold_kg,
         ),
         large_piece_suffix=large_piece_suffix,
+        super_large_piece_companies=(
+            super_large_piece_companies or default.super_large_piece_companies
+        ),
+        super_large_piece_threshold_kg=_float_from_value(
+            value.get("super_large_piece_threshold_kg"),
+            default.super_large_piece_threshold_kg,
+        ),
+        super_large_piece_suffix=super_large_piece_suffix,
     )
 
 
@@ -191,6 +208,9 @@ def _rule_config_to_json(rule_config: ExpressFeeRuleConfig) -> dict[str, Any]:
         "large_piece_companies": sorted(rule_config.large_piece_companies),
         "large_piece_threshold_kg": rule_config.large_piece_threshold_kg,
         "large_piece_suffix": rule_config.large_piece_suffix,
+        "super_large_piece_companies": sorted(rule_config.super_large_piece_companies),
+        "super_large_piece_threshold_kg": rule_config.super_large_piece_threshold_kg,
+        "super_large_piece_suffix": rule_config.super_large_piece_suffix,
     }
 
 

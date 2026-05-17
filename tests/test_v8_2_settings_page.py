@@ -42,6 +42,9 @@ class V82SettingsPageTest(unittest.TestCase):
             large_piece_companies={"顺丰", "德邦"},
             large_piece_threshold_kg=20,
             large_piece_suffix="_大件",
+            super_large_piece_companies={"顺丰", "德邦"},
+            super_large_piece_threshold_kg=60,
+            super_large_piece_suffix="_超大件",
         )
 
         rebuilt = build_rule_config_from_text_fields(
@@ -50,6 +53,9 @@ class V82SettingsPageTest(unittest.TestCase):
             large_companies_text=format_large_piece_companies(rule_config),
             threshold_text="20",
             suffix_text="_大件",
+            super_large_companies_text="顺丰、德邦",
+            super_large_threshold_text="60",
+            super_large_suffix_text="_超大件",
         )
 
         self.assertEqual(rebuilt.exact_company_map, rule_config.exact_company_map)
@@ -60,6 +66,9 @@ class V82SettingsPageTest(unittest.TestCase):
         self.assertEqual(rebuilt.large_piece_companies, {"顺丰", "德邦"})
         self.assertEqual(rebuilt.large_piece_threshold_kg, 20)
         self.assertEqual(rebuilt.large_piece_suffix, "_大件")
+        self.assertEqual(rebuilt.super_large_piece_companies, {"顺丰", "德邦"})
+        self.assertEqual(rebuilt.super_large_piece_threshold_kg, 60)
+        self.assertEqual(rebuilt.super_large_piece_suffix, "_超大件")
 
     def test_rule_config_text_validation_reports_empty_threshold(self) -> None:
         with self.assertRaisesRegex(ValueError, "重量阈值必须是数字"):
@@ -69,6 +78,35 @@ class V82SettingsPageTest(unittest.TestCase):
                 large_companies_text="顺丰、德邦",
                 threshold_text="",
                 suffix_text="_大件",
+                super_large_companies_text="顺丰、德邦",
+                super_large_threshold_text="60",
+                super_large_suffix_text="_超大件",
+            )
+
+    def test_rule_config_text_validation_reports_super_large_threshold_errors(self) -> None:
+        with self.assertRaisesRegex(ValueError, "超大件重量阈值必须是数字"):
+            build_rule_config_from_text_fields(
+                exact_mapping_text="顺丰速运新3=顺丰",
+                keyword_mapping_text="顺丰=顺丰",
+                large_companies_text="顺丰、德邦",
+                threshold_text="20",
+                suffix_text="_大件",
+                super_large_companies_text="顺丰、德邦",
+                super_large_threshold_text="",
+                super_large_suffix_text="_超大件",
+            )
+
+    def test_super_large_threshold_must_be_greater_than_large_threshold(self) -> None:
+        with self.assertRaisesRegex(ValueError, "超大件重量阈值必须大于大件重量阈值"):
+            build_rule_config_from_text_fields(
+                exact_mapping_text="顺丰速运新3=顺丰",
+                keyword_mapping_text="顺丰=顺丰",
+                large_companies_text="顺丰、德邦",
+                threshold_text="20",
+                suffix_text="_大件",
+                super_large_companies_text="顺丰、德邦",
+                super_large_threshold_text="20",
+                super_large_suffix_text="_超大件",
             )
 
 
