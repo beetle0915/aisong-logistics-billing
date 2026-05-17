@@ -6,7 +6,7 @@ price workbooks named like "小张-快递报价.xlsx". It parses the original
 express company name into "快递公司（标准版）", chooses the normal or large-piece
 price template, then appends calculation result columns in the sales sheet:
 
-    快递费用, 首重费用, 续重费用, 续重重量, 快递公司（标准版）
+    快递费用, 首重费用, 续重费用, 续重重量, 首重重量, 计费档位, 计费模板, 快递公司（标准版）
 
 Pricing key:
     业务员 + 计费模板 + 省
@@ -62,7 +62,10 @@ RESULT_COLUMNS = [
     "快递费用",
     "首重费用",
     "续重费用",
+    "首重重量",
     "续重重量",
+    "计费档位",
+    "计费模板",
     STANDARD_EXPRESS_COLUMN,
     PRICE_VERSION_COLUMN,
     PRICE_EFFECTIVE_DATE_COLUMN,
@@ -109,6 +112,9 @@ DEFAULT_EXPRESS_COMPANY_KEYWORD_RULES = [
 DEFAULT_LARGE_PIECE_COMPANIES = {"顺丰", "德邦"}
 DEFAULT_LARGE_PIECE_THRESHOLD_KG = 20
 DEFAULT_LARGE_PIECE_SUFFIX = "_大件"
+DEFAULT_SUPER_LARGE_PIECE_COMPANIES = {"顺丰", "德邦"}
+DEFAULT_SUPER_LARGE_PIECE_THRESHOLD_KG = 60
+DEFAULT_SUPER_LARGE_PIECE_SUFFIX = "_超大件"
 INTEGER_ROUNDING_EXPRESS_COMPANIES = {"德邦"}
 PRICE_VERSION_FILE_PATTERN = re.compile(r"^(\d{8})_?(.+)-快递报价.*\.xlsx$")
 ProgressCallback = Callable[[str], None]
@@ -125,6 +131,12 @@ def should_emit_progress(current: int, total: int, interval: int) -> bool:
     return current == 1 or current == total or current % interval == 0
 
 
+def is_tier_template_name(sheet_name: str, rule_config: ExpressFeeRuleConfig) -> bool:
+    return sheet_name.endswith(rule_config.large_piece_suffix) or sheet_name.endswith(
+        rule_config.super_large_piece_suffix
+    )
+
+
 def build_default_rule_config() -> ExpressFeeRuleConfig:
     return ExpressFeeRuleConfig(
         exact_company_map=dict(DEFAULT_EXPRESS_COMPANY_EXACT_MAP),
@@ -132,6 +144,9 @@ def build_default_rule_config() -> ExpressFeeRuleConfig:
         large_piece_companies=set(DEFAULT_LARGE_PIECE_COMPANIES),
         large_piece_threshold_kg=DEFAULT_LARGE_PIECE_THRESHOLD_KG,
         large_piece_suffix=DEFAULT_LARGE_PIECE_SUFFIX,
+        super_large_piece_companies=set(DEFAULT_SUPER_LARGE_PIECE_COMPANIES),
+        super_large_piece_threshold_kg=DEFAULT_SUPER_LARGE_PIECE_THRESHOLD_KG,
+        super_large_piece_suffix=DEFAULT_SUPER_LARGE_PIECE_SUFFIX,
     )
 
 
@@ -145,6 +160,14 @@ def normalize_rule_config(rule_config: ExpressFeeRuleConfig | None) -> ExpressFe
         threshold = default.large_piece_threshold_kg
 
     suffix = normalize_text(rule_config.large_piece_suffix) or default.large_piece_suffix
+    super_threshold = rule_config.super_large_piece_threshold_kg
+    if super_threshold <= 0:
+        super_threshold = default.super_large_piece_threshold_kg
+
+    super_suffix = (
+        normalize_text(rule_config.super_large_piece_suffix)
+        or default.super_large_piece_suffix
+    )
     return ExpressFeeRuleConfig(
         exact_company_map={
             normalize_text(raw): normalize_text(standard)
@@ -166,6 +189,13 @@ def normalize_rule_config(rule_config: ExpressFeeRuleConfig | None) -> ExpressFe
         },
         large_piece_threshold_kg=threshold,
         large_piece_suffix=suffix,
+        super_large_piece_companies={
+            normalize_text(company)
+            for company in rule_config.super_large_piece_companies
+            if normalize_text(company)
+        },
+        super_large_piece_threshold_kg=super_threshold,
+        super_large_piece_suffix=super_suffix,
     )
 
 
@@ -178,6 +208,13 @@ class Price:
     price_file: Path | None = None
     sheet_name: str = ""
     row_number: int = 0
+
+
+@dataclass(frozen=True)
+class BillingTier:
+    name: str
+    sheet_name: str
+    first_weight_kg: float
 
 
 @dataclass(frozen=True)
@@ -714,17 +751,38 @@ def parse_standard_express_company(
     raise ValueError(f"快递公司无法解析为标准名称：{raw_name}")
 
 
+def resolve_billing_tier(
+    express_company: str,
+    weight: float,
+    rule_config: ExpressFeeRuleConfig,
+) -> BillingTier:
+    if (
+        express_company in rule_config.super_large_piece_companies
+        and weight >= rule_config.super_large_piece_threshold_kg
+    ):
+        return BillingTier(
+            name="超大件",
+            sheet_name=f"{express_company}{rule_config.super_large_piece_suffix}",
+            first_weight_kg=rule_config.super_large_piece_threshold_kg,
+        )
+    if (
+        express_company in rule_config.large_piece_companies
+        and weight >= rule_config.large_piece_threshold_kg
+    ):
+        return BillingTier(
+            name="大件",
+            sheet_name=f"{express_company}{rule_config.large_piece_suffix}",
+            first_weight_kg=rule_config.large_piece_threshold_kg,
+        )
+    return BillingTier(name="普通件", sheet_name=express_company, first_weight_kg=1.0)
+
+
 def resolve_price_sheet_name(
     express_company: str,
     weight: float,
     rule_config: ExpressFeeRuleConfig,
 ) -> str:
-    if (
-        express_company in rule_config.large_piece_companies
-        and weight >= rule_config.large_piece_threshold_kg
-    ):
-        return f"{express_company}{rule_config.large_piece_suffix}"
-    return express_company
+    return resolve_billing_tier(express_company, weight, rule_config).sheet_name
 
 
 def load_price_workbook_prices(ref: PriceWorkbookRef) -> tuple[dict[tuple[str, str], Price], set[str]]:
@@ -880,7 +938,7 @@ def build_versioned_price_catalog(
         standard_companies={
             name
             for name in standard_companies
-            if not name.endswith(resolved_rule_config.large_piece_suffix)
+            if not is_tier_template_name(name, resolved_rule_config)
         },
     )
 
@@ -911,7 +969,7 @@ def build_preflight_price_catalog(
         templates = load_price_workbook_templates(ref_by_file[price_file])
         catalog.templates_by_file[price_file] = templates
         catalog.standard_companies.update(
-            name for name in templates if not name.endswith(rule_config.large_piece_suffix)
+            name for name in templates if not is_tier_template_name(name, rule_config)
         )
     catalog.standard_companies.update(
         standard
@@ -953,7 +1011,7 @@ def load_preflight_price_catalog(price_dir: Path, rule_config: ExpressFeeRuleCon
         templates = load_price_workbook_templates(ref)
         templates_by_salesman.setdefault(ref.salesman, set()).update(templates)
         standard_companies.update(
-            name for name in templates if not name.endswith(rule_config.large_piece_suffix)
+            name for name in templates if not is_tier_template_name(name, rule_config)
         )
     standard_companies.update(
         standard
@@ -1114,12 +1172,14 @@ def load_price_template_sheet(
     )
 
 
-def calculate_extra_weight(weight: float) -> int:
+def calculate_extra_weight(weight: float, first_weight_kg: float = 1.0) -> int:
     if weight <= 0:
         raise ValueError(f"重量必须大于0：{weight}")
-    if weight <= 1:
+    if first_weight_kg <= 0:
+        raise ValueError(f"首重重量必须大于0：{first_weight_kg}")
+    if weight <= first_weight_kg:
         return 0
-    return math.ceil(weight - 1)
+    return math.ceil(weight - first_weight_kg)
 
 
 def round_half_up_to_integer(value: float) -> int:
@@ -1131,8 +1191,9 @@ def calculate_fee(
     price: Price,
     round_digits: int | None,
     express_company: str,
+    first_weight_kg: float = 1.0,
 ) -> tuple[float | int, int]:
-    extra_weight = calculate_extra_weight(weight)
+    extra_weight = calculate_extra_weight(weight, first_weight_kg)
     fee = price.first_price + price.extra_price * extra_weight
     if express_company in INTEGER_ROUNDING_EXPRESS_COMPANIES:
         fee = round_half_up_to_integer(fee)
@@ -1271,7 +1332,7 @@ def build_available_standard_companies_from_catalog(
         sheet_name
         for templates in price_catalog.templates_by_file.values()
         for sheet_name in templates
-        if not sheet_name.endswith(rule_config.large_piece_suffix)
+        if not is_tier_template_name(sheet_name, rule_config)
     }
     standard_companies.update(
         standard
@@ -1334,6 +1395,7 @@ def process_sales_workbook(
         weight_value = None
         weight: float | None = None
         price_sheet_name = ""
+        billing_tier = BillingTier(name="未确定", sheet_name="", first_weight_kg=1.0)
         shipping_date = ""
         try:
             salesman = normalize_text(ws.cell(row=row, column=salesman_col).value)
@@ -1349,11 +1411,12 @@ def process_sales_workbook(
             weight = parse_number(weight_value, "重量")
             if weight <= 0:
                 raise ValueError(f"重量必须大于0：{weight}")
-            price_sheet_name = resolve_price_sheet_name(
+            billing_tier = resolve_billing_tier(
                 express_company,
                 weight,
                 rule_config,
             )
+            price_sheet_name = billing_tier.sheet_name
 
             if not salesman:
                 raise ValueError("业务员为空")
@@ -1376,8 +1439,9 @@ def process_sales_workbook(
                 key = (salesman, price_sheet_name, province)
                 price = price_map.get(key)
             if price is None:
+                tier_price_missing = billing_tier.name in {"大件", "超大件"}
                 if (
-                    price_sheet_name.endswith(rule_config.large_piece_suffix)
+                    tier_price_missing
                     and (
                         (
                             price_catalog is not None
@@ -1391,7 +1455,8 @@ def process_sales_workbook(
                         )
                     )
                 ):
-                    reason = f"缺少大件报价模板：{price_sheet_name}"
+                    tier_label = "超大件" if billing_tier.name == "超大件" else "大件"
+                    reason = f"缺少{tier_label}报价模板：{price_sheet_name}"
                     suggestion = (
                         f"请在 {salesman} 的报价表中新增 sheet「{price_sheet_name}」，"
                         f"并填写「{province}」的首重和续重价格。"
@@ -1427,12 +1492,18 @@ def process_sales_workbook(
                 price,
                 round_digits,
                 express_company,
+                billing_tier.first_weight_kg,
             )
 
             ws.cell(row=row, column=result_columns["快递费用"]).value = fee
             ws.cell(row=row, column=result_columns["首重费用"]).value = price.first_price
             ws.cell(row=row, column=result_columns["续重费用"]).value = price.extra_price
+            ws.cell(row=row, column=result_columns["首重重量"]).value = format_number(
+                billing_tier.first_weight_kg
+            )
             ws.cell(row=row, column=result_columns["续重重量"]).value = extra_weight
+            ws.cell(row=row, column=result_columns["计费档位"]).value = billing_tier.name
+            ws.cell(row=row, column=result_columns["计费模板"]).value = price_sheet_name
             ws.cell(row=row, column=result_columns[PRICE_VERSION_COLUMN]).value = price.version or None
             ws.cell(row=row, column=result_columns[PRICE_EFFECTIVE_DATE_COLUMN]).value = (
                 price.effective_date or None
@@ -3098,7 +3169,7 @@ def main() -> int:
     available_standard_companies = {
         sheet_name
         for _, sheet_name, _ in price_map
-        if not sheet_name.endswith(rule_config.large_piece_suffix)
+        if not is_tier_template_name(sheet_name, rule_config)
     }
     summary = process_sales_workbook(
         sales_file,

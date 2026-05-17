@@ -219,12 +219,19 @@ def format_large_piece_companies(rule_config: ExpressFeeRuleConfig) -> str:
     return "、".join(sorted(rule_config.large_piece_companies))
 
 
+def format_super_large_piece_companies(rule_config: ExpressFeeRuleConfig) -> str:
+    return "、".join(sorted(rule_config.super_large_piece_companies))
+
+
 def build_rule_config_from_text_fields(
     exact_mapping_text: str,
     keyword_mapping_text: str,
     large_companies_text: str,
     threshold_text: str,
     suffix_text: str,
+    super_large_companies_text: str,
+    super_large_threshold_text: str,
+    super_large_suffix_text: str,
 ) -> ExpressFeeRuleConfig:
     try:
         threshold = float(threshold_text.strip())
@@ -237,9 +244,26 @@ def build_rule_config_from_text_fields(
     if not suffix:
         raise ValueError("模板后缀不能为空。")
 
+    try:
+        super_large_threshold = float(super_large_threshold_text.strip())
+    except ValueError as exc:
+        raise ValueError("超大件重量阈值必须是数字。") from exc
+    if super_large_threshold <= 0:
+        raise ValueError("超大件重量阈值必须大于 0。")
+    if super_large_threshold <= threshold:
+        raise ValueError("超大件重量阈值必须大于大件重量阈值。")
+
+    super_large_suffix = super_large_suffix_text.strip()
+    if not super_large_suffix:
+        raise ValueError("超大件模板后缀不能为空。")
+
     large_piece_companies = parse_company_list(large_companies_text)
     if not large_piece_companies:
         raise ValueError("大件快递至少需要填写一个标准快递公司。")
+
+    super_large_piece_companies = parse_company_list(super_large_companies_text)
+    if not super_large_piece_companies:
+        raise ValueError("超大件快递至少需要填写一个标准快递公司。")
 
     return ExpressFeeRuleConfig(
         exact_company_map=parse_mapping_text(exact_mapping_text, "快递公司精准映射"),
@@ -253,6 +277,9 @@ def build_rule_config_from_text_fields(
         large_piece_companies=large_piece_companies,
         large_piece_threshold_kg=threshold,
         large_piece_suffix=suffix,
+        super_large_piece_companies=super_large_piece_companies,
+        super_large_piece_threshold_kg=super_large_threshold,
+        super_large_piece_suffix=super_large_suffix,
     )
 
 
@@ -276,6 +303,13 @@ class RuleConfigWindow(tk.Toplevel):
         )
         self.threshold_var = tk.StringVar(value=str(rule_config.large_piece_threshold_kg))
         self.suffix_var = tk.StringVar(value=rule_config.large_piece_suffix)
+        self.super_large_companies_var = tk.StringVar(
+            value="、".join(sorted(rule_config.super_large_piece_companies))
+        )
+        self.super_large_threshold_var = tk.StringVar(
+            value=str(rule_config.super_large_piece_threshold_kg)
+        )
+        self.super_large_suffix_var = tk.StringVar(value=rule_config.super_large_piece_suffix)
 
         self._build_ui()
         self._load_rule_config(rule_config)
@@ -340,7 +374,7 @@ class RuleConfigWindow(tk.Toplevel):
         keyword_scroll.grid(row=1, column=1, sticky="ns")
         self.keyword_text.configure(yscrollcommand=keyword_scroll.set)
 
-        large_frame = ttk.LabelFrame(root, text="高级计费规则：大件模板", padding=10)
+        large_frame = ttk.LabelFrame(root, text="高级计费规则：大件 / 超大件模板", padding=10)
         large_frame.grid(row=4, column=0, sticky="ew", pady=(0, 10))
         large_frame.columnconfigure(1, weight=1)
         ttk.Label(
@@ -356,7 +390,7 @@ class RuleConfigWindow(tk.Toplevel):
             sticky="ew",
             padx=(10, 0),
         )
-        ttk.Label(large_frame, text="重量阈值").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(large_frame, text="大件首重重量").grid(row=2, column=0, sticky="w", pady=(8, 0))
         ttk.Entry(large_frame, textvariable=self.threshold_var, width=12).grid(
             row=2,
             column=1,
@@ -364,9 +398,33 @@ class RuleConfigWindow(tk.Toplevel):
             padx=(10, 0),
             pady=(8, 0),
         )
-        ttk.Label(large_frame, text="模板后缀").grid(row=3, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(large_frame, text="大件模板后缀").grid(row=3, column=0, sticky="w", pady=(8, 0))
         ttk.Entry(large_frame, textvariable=self.suffix_var, width=18).grid(
             row=3,
+            column=1,
+            sticky="w",
+            padx=(10, 0),
+            pady=(8, 0),
+        )
+        ttk.Label(large_frame, text="超大件快递").grid(row=4, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(large_frame, textvariable=self.super_large_companies_var).grid(
+            row=4,
+            column=1,
+            sticky="ew",
+            padx=(10, 0),
+            pady=(8, 0),
+        )
+        ttk.Label(large_frame, text="超大件首重重量").grid(row=5, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(large_frame, textvariable=self.super_large_threshold_var, width=12).grid(
+            row=5,
+            column=1,
+            sticky="w",
+            padx=(10, 0),
+            pady=(8, 0),
+        )
+        ttk.Label(large_frame, text="超大件模板后缀").grid(row=6, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(large_frame, textvariable=self.super_large_suffix_var, width=18).grid(
+            row=6,
             column=1,
             sticky="w",
             padx=(10, 0),
@@ -388,6 +446,9 @@ class RuleConfigWindow(tk.Toplevel):
         self.large_companies_var.set(format_large_piece_companies(rule_config))
         self.threshold_var.set(str(rule_config.large_piece_threshold_kg))
         self.suffix_var.set(rule_config.large_piece_suffix)
+        self.super_large_companies_var.set(format_super_large_piece_companies(rule_config))
+        self.super_large_threshold_var.set(str(rule_config.super_large_piece_threshold_kg))
+        self.super_large_suffix_var.set(rule_config.super_large_piece_suffix)
         self.exact_text.delete("1.0", tk.END)
         self.exact_text.insert(tk.END, format_exact_mapping_text(rule_config))
         self.keyword_text.delete("1.0", tk.END)
@@ -414,6 +475,9 @@ class RuleConfigWindow(tk.Toplevel):
             large_companies_text=self.large_companies_var.get(),
             threshold_text=self.threshold_var.get(),
             suffix_text=self.suffix_var.get(),
+            super_large_companies_text=self.super_large_companies_var.get(),
+            super_large_threshold_text=self.super_large_threshold_var.get(),
+            super_large_suffix_text=self.super_large_suffix_var.get(),
         )
 
     def _parse_company_list(self, text: str) -> set[str]:
@@ -667,6 +731,9 @@ class ExpressFeeApp(tk.Tk):
         self.settings_large_companies_var = tk.StringVar()
         self.settings_threshold_var = tk.StringVar()
         self.settings_suffix_var = tk.StringVar()
+        self.settings_super_large_companies_var = tk.StringVar()
+        self.settings_super_large_threshold_var = tk.StringVar()
+        self.settings_super_large_suffix_var = tk.StringVar()
 
         self._configure_styles()
         self._refresh_option_labels()
@@ -1443,7 +1510,7 @@ class ExpressFeeApp(tk.Tk):
             padx=(10, 8),
             pady=5,
         )
-        ttk.Label(large_frame, text="重量阈值", style="Field.TLabel").grid(
+        ttk.Label(large_frame, text="大件首重重量", style="Field.TLabel").grid(
             row=1,
             column=0,
             sticky="w",
@@ -1456,7 +1523,7 @@ class ExpressFeeApp(tk.Tk):
             padx=(10, 8),
             pady=5,
         )
-        ttk.Label(large_frame, text="模板后缀", style="Field.TLabel").grid(
+        ttk.Label(large_frame, text="大件模板后缀", style="Field.TLabel").grid(
             row=2,
             column=0,
             sticky="w",
@@ -1464,6 +1531,45 @@ class ExpressFeeApp(tk.Tk):
         )
         ttk.Entry(large_frame, textvariable=self.settings_suffix_var, width=16).grid(
             row=2,
+            column=1,
+            sticky="w",
+            padx=(10, 8),
+            pady=5,
+        )
+        ttk.Label(large_frame, text="超大件快递", style="Field.TLabel").grid(
+            row=3,
+            column=0,
+            sticky="w",
+            pady=5,
+        )
+        ttk.Entry(large_frame, textvariable=self.settings_super_large_companies_var).grid(
+            row=3,
+            column=1,
+            sticky="ew",
+            padx=(10, 8),
+            pady=5,
+        )
+        ttk.Label(large_frame, text="超大件首重重量", style="Field.TLabel").grid(
+            row=4,
+            column=0,
+            sticky="w",
+            pady=5,
+        )
+        ttk.Entry(large_frame, textvariable=self.settings_super_large_threshold_var, width=12).grid(
+            row=4,
+            column=1,
+            sticky="w",
+            padx=(10, 8),
+            pady=5,
+        )
+        ttk.Label(large_frame, text="超大件模板后缀", style="Field.TLabel").grid(
+            row=5,
+            column=0,
+            sticky="w",
+            pady=5,
+        )
+        ttk.Entry(large_frame, textvariable=self.settings_super_large_suffix_var, width=16).grid(
+            row=5,
             column=1,
             sticky="w",
             padx=(10, 8),
@@ -1832,6 +1938,13 @@ class ExpressFeeApp(tk.Tk):
         self.settings_large_companies_var.set(format_large_piece_companies(self.rule_config))
         self.settings_threshold_var.set(str(self.rule_config.large_piece_threshold_kg))
         self.settings_suffix_var.set(self.rule_config.large_piece_suffix)
+        self.settings_super_large_companies_var.set(
+            format_super_large_piece_companies(self.rule_config)
+        )
+        self.settings_super_large_threshold_var.set(
+            str(self.rule_config.super_large_piece_threshold_kg)
+        )
+        self.settings_super_large_suffix_var.set(self.rule_config.super_large_piece_suffix)
 
     def _load_rule_settings_text(self) -> None:
         self._sync_rule_settings_vars()
@@ -1853,6 +1966,9 @@ class ExpressFeeApp(tk.Tk):
             large_companies_text=self.settings_large_companies_var.get(),
             threshold_text=self.settings_threshold_var.get(),
             suffix_text=self.settings_suffix_var.get(),
+            super_large_companies_text=self.settings_super_large_companies_var.get(),
+            super_large_threshold_text=self.settings_super_large_threshold_var.get(),
+            super_large_suffix_text=self.settings_super_large_suffix_var.get(),
         )
 
     def _restore_default_settings_rules(self) -> None:
