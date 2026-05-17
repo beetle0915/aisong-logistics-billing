@@ -53,4 +53,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: aisong-freight-manager-v${{ env.APP_VERSION }}-windows
-          path: app/dist/windows/艾松运费管家/
+          path: app/dist/windows/艾松运费管家-V${{ env.APP_VERSION }}/

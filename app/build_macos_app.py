@@ -26,7 +26,7 @@ DEFAULT_PYTHON = Path(
 def build_app_bundle(app_dir: Path) -> Path:
     app_dir = app_dir.resolve()
     express_root = app_dir.parent
-    bundle_dir = express_root / f"{APP_NAME}.app"
+    bundle_dir = express_root / f"{APP_NAME}-V{APP_VERSION}.app"
     contents_dir = bundle_dir / "Contents"
     macos_dir = contents_dir / "MacOS"
     resources_dir = contents_dir / "Resources"

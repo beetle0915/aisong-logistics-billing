@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from express_app.version import APP_DISPLAY_NAME
+from express_app.version import APP_DISPLAY_NAME, APP_VERSION
 
 
 APP_NAME = APP_DISPLAY_NAME
@@ -19,7 +19,7 @@ APP_ICON_PATH = ASSETS_DIR / "app_icon.ico"
 ENTRY_FILE = ROOT_DIR / "windows_entry.py"
 BUILD_DIR = ROOT_DIR / "build" / "windows"
 DIST_DIR = ROOT_DIR / "dist" / "windows"
-PACKAGE_DIR = DIST_DIR / APP_NAME
+PACKAGE_DIR = DIST_DIR / f"{APP_NAME}-V{APP_VERSION}"
 BUILD_PACKAGE_DIR = DIST_DIR / BUILD_APP_NAME
 
 
