@@ -22,6 +22,7 @@ class CustomerBalanceRecord:
     customer: str
     total_consumed: float
     total_paid: float
+    total_abnormal_deducted: float
     current_balance: float
     last_date: date | None
     history_file: Path
@@ -50,8 +51,20 @@ class AccountBalanceDashboard:
         return sum(record.total_paid for record in self.records)
 
     @property
+    def total_abnormal_deducted(self) -> float:
+        return sum(record.total_abnormal_deducted for record in self.records)
+
+    @property
     def total_balance(self) -> float:
         return sum(record.current_balance for record in self.records)
+
+    @property
+    def available_balance_total(self) -> float:
+        return sum(record.current_balance for record in self.records if record.current_balance > 0)
+
+    @property
+    def debt_total(self) -> float:
+        return abs(sum(record.current_balance for record in self.records if record.current_balance < 0))
 
     @property
     def debtor_count(self) -> int:
@@ -75,6 +88,8 @@ def collect_account_balance_dashboard(split_dir: Path) -> AccountBalanceDashboar
 
     records.sort(
         key=lambda item: (
+            item.current_balance >= 0,
+            item.current_balance if item.current_balance < 0 else 0,
             item.last_date is None,
             -(item.last_date.toordinal() if item.last_date else 0),
             item.customer,
@@ -116,6 +131,7 @@ def read_customer_balance_record(customer_dir: Path, history_file: Path) -> Cust
             customer=customer_dir.name,
             total_consumed=round(total_consumed, 2),
             total_paid=round(total_paid, 2),
+            total_abnormal_deducted=round(total_abnormal_deducted, 2),
             current_balance=round(total_paid - total_consumed - total_abnormal_deducted, 2),
             last_date=last_date,
             history_file=history_file,

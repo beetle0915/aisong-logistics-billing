@@ -77,13 +77,23 @@ V8_2_1_AUTO_WORKFLOW_TRANSITIONS = {"on_start": "run", "on_done": "results"}
 V8_2_1_CONFIG_PAGE_SECTIONS = ("销售出库单", "当前系统设置", "生成选项")
 V8_2_1_CONFIG_SYSTEM_DIRECTORY_LABELS = ("报价表目录", "总结果目录", "客户明细目录")
 V8_2_1_CONFIG_GENERATION_OPTIONS = ("生成客户每日明细", "生成客户历史汇总")
-V8_3_BALANCE_TABLE_COLUMNS = ("客户", "累计消费", "累计收款", "当前余额", "最近日期", "状态", "文件路径")
+V8_3_BALANCE_TABLE_COLUMNS = (
+    "客户",
+    "累计消费",
+    "累计收款",
+    "累计异常扣款",
+    "当前余额",
+    "最近日期",
+    "状态",
+    "文件路径",
+)
 V8_3_1_BALANCE_TOP_ACTIONS = ()
 V8_3_1_BALANCE_FOOTER_ACTIONS = (
     ("刷新数据", "Primary.TButton"),
     ("打开客户目录", "Secondary.TButton"),
     ("打开历史汇总表", "Secondary.TButton"),
 )
+V8_9_3_BALANCE_METRIC_COLUMNS = 3
 WORKBENCH_LABEL_FONT_SIZE = 12
 SIDEBAR_BOTTOM_ACTIONS = ("系统设置", "打开客户目录")
 V8_6_CONFIG_PAGE_ACTIONS = ("开始测试",)
@@ -745,7 +755,9 @@ class ExpressFeeApp(tk.Tk):
         self.balance_status_var = tk.StringVar(value="等待刷新")
         self.balance_total_consumed_var = tk.StringVar(value="¥0.00")
         self.balance_total_paid_var = tk.StringVar(value="¥0.00")
-        self.balance_total_balance_var = tk.StringVar(value="¥0.00")
+        self.balance_total_abnormal_deducted_var = tk.StringVar(value="¥0.00")
+        self.balance_available_balance_var = tk.StringVar(value="¥0.00")
+        self.balance_debt_total_var = tk.StringVar(value="¥0.00")
         self.balance_debtor_count_var = tk.StringVar(value="0 位")
         self.balance_records: list[CustomerBalanceRecord] = []
         self.balance_history_paths: dict[str, Path] = {}
@@ -1671,12 +1683,50 @@ class ExpressFeeApp(tk.Tk):
 
         summary_frame = ttk.Frame(content, style="Content.TFrame")
         summary_frame.grid(row=0, column=0, sticky="ew", pady=(0, 12))
-        for column in range(4):
+        for column in range(3):
             summary_frame.columnconfigure(column, weight=1)
-        self._metric(summary_frame, 0, "累计消费总额", self.balance_total_consumed_var)
-        self._metric(summary_frame, 1, "累计收款总额", self.balance_total_paid_var)
-        self._metric(summary_frame, 2, "当前余额合计", self.balance_total_balance_var)
-        self._metric(summary_frame, 3, "欠款客户", self.balance_debtor_count_var)
+        self._metric(
+            summary_frame,
+            0,
+            "累计消费总额",
+            self.balance_total_consumed_var,
+            columns_per_row=V8_9_3_BALANCE_METRIC_COLUMNS,
+        )
+        self._metric(
+            summary_frame,
+            1,
+            "累计收款总额",
+            self.balance_total_paid_var,
+            columns_per_row=V8_9_3_BALANCE_METRIC_COLUMNS,
+        )
+        self._metric(
+            summary_frame,
+            2,
+            "累计异常扣款",
+            self.balance_total_abnormal_deducted_var,
+            columns_per_row=V8_9_3_BALANCE_METRIC_COLUMNS,
+        )
+        self._metric(
+            summary_frame,
+            3,
+            "可用余额合计",
+            self.balance_available_balance_var,
+            columns_per_row=V8_9_3_BALANCE_METRIC_COLUMNS,
+        )
+        self._metric(
+            summary_frame,
+            4,
+            "欠款金额合计",
+            self.balance_debt_total_var,
+            columns_per_row=V8_9_3_BALANCE_METRIC_COLUMNS,
+        )
+        self._metric(
+            summary_frame,
+            5,
+            "欠款客户",
+            self.balance_debtor_count_var,
+            columns_per_row=V8_9_3_BALANCE_METRIC_COLUMNS,
+        )
 
         table_frame = ttk.LabelFrame(
             content,
@@ -1690,7 +1740,7 @@ class ExpressFeeApp(tk.Tk):
 
         self.balance_tree = ttk.Treeview(
             table_frame,
-            columns=("customer", "consumed", "paid", "balance", "last_date", "status", "path"),
+            columns=("customer", "consumed", "paid", "deducted", "balance", "last_date", "status", "path"),
             show="headings",
             height=12,
             selectmode="browse",
@@ -1700,6 +1750,7 @@ class ExpressFeeApp(tk.Tk):
         self.balance_tree.column("customer", width=110, minwidth=90, stretch=False)
         self.balance_tree.column("consumed", width=120, minwidth=100, stretch=False)
         self.balance_tree.column("paid", width=120, minwidth=100, stretch=False)
+        self.balance_tree.column("deducted", width=120, minwidth=110, stretch=False)
         self.balance_tree.column("balance", width=120, minwidth=100, stretch=False)
         self.balance_tree.column("last_date", width=110, minwidth=90, stretch=False)
         self.balance_tree.column("status", width=80, minwidth=70, stretch=False)
@@ -2227,9 +2278,24 @@ class ExpressFeeApp(tk.Tk):
         )
         value.grid(row=row, column=1, sticky="ew", padx=(10, 0), pady=5)
 
-    def _metric(self, parent: ttk.Frame, column: int, label: str, variable: tk.StringVar) -> None:
+    def _metric(
+        self,
+        parent: ttk.Frame,
+        column: int,
+        label: str,
+        variable: tk.StringVar,
+        *,
+        columns_per_row: int | None = None,
+    ) -> None:
         frame = ttk.Frame(parent, padding=(12, 10), style="Surface.TFrame")
-        frame.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 8, 0))
+        row_index, column_index = _metric_grid_position(column, columns_per_row)
+        frame.grid(
+            row=row_index,
+            column=column_index,
+            sticky="ew",
+            padx=(0 if column_index == 0 else 8, 0),
+            pady=(0 if row_index == 0 else 8, 0),
+        )
         frame.columnconfigure(0, weight=1)
         value = ttk.Label(frame, textvariable=variable, style="MetricValue.TLabel")
         value.grid(row=0, column=0, sticky="ew")
@@ -3321,7 +3387,11 @@ class ExpressFeeApp(tk.Tk):
         self.balance_records = dashboard.records
         self.balance_total_consumed_var.set(self._format_currency(dashboard.total_consumed))
         self.balance_total_paid_var.set(self._format_currency(dashboard.total_paid))
-        self.balance_total_balance_var.set(self._format_currency(dashboard.total_balance))
+        self.balance_total_abnormal_deducted_var.set(
+            self._format_currency(dashboard.total_abnormal_deducted)
+        )
+        self.balance_available_balance_var.set(self._format_currency(dashboard.available_balance_total))
+        self.balance_debt_total_var.set(self._format_currency(dashboard.debt_total))
         self.balance_debtor_count_var.set(f"{dashboard.debtor_count} 位")
         if dashboard.errors:
             self.balance_status_var.set(f"读取完成，{len(dashboard.errors)} 个客户存在问题")
@@ -3349,6 +3419,7 @@ class ExpressFeeApp(tk.Tk):
                     record.customer,
                     self._format_currency(record.total_consumed),
                     self._format_currency(record.total_paid),
+                    self._format_currency(record.total_abnormal_deducted),
                     self._format_currency(record.current_balance),
                     record.last_date.isoformat() if record.last_date else "",
                     record.status,
@@ -3637,6 +3708,12 @@ class ExpressFeeApp(tk.Tk):
     def _open_path(self, path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True)
         self._open_existing_path(path)
+
+
+def _metric_grid_position(index: int, columns_per_row: int | None = None) -> tuple[int, int]:
+    if columns_per_row is None:
+        return 0, index
+    return index // columns_per_row, index % columns_per_row
 
 
 def main() -> None:

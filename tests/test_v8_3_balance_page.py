@@ -61,6 +61,17 @@ class FakeTree:
         self.selected = item_id
 
 
+class FakeMetricFrame:
+    def __init__(self) -> None:
+        self.grid_calls: list[dict[str, object]] = []
+
+    def grid(self, **kwargs: object) -> None:
+        self.grid_calls.append(kwargs)
+
+    def columnconfigure(self, _column: int, _weight: int) -> None:
+        return
+
+
 class V83BalancePageTest(unittest.TestCase):
     def test_balance_page_is_enabled_navigation_item(self) -> None:
         self.assertIn("账户余额", V8_3_ENABLED_NAV_ITEMS)
@@ -68,7 +79,7 @@ class V83BalancePageTest(unittest.TestCase):
     def test_balance_table_columns_match_v8_3_handoff(self) -> None:
         self.assertEqual(
             list(gui_app.V8_3_BALANCE_TABLE_COLUMNS),
-            ["客户", "累计消费", "累计收款", "当前余额", "最近日期", "状态", "文件路径"],
+            ["客户", "累计消费", "累计收款", "累计异常扣款", "当前余额", "最近日期", "状态", "文件路径"],
         )
 
     def test_v8_3_1_balance_page_moves_refresh_to_footer_actions(self) -> None:
@@ -95,6 +106,7 @@ class V83BalancePageTest(unittest.TestCase):
                 customer="张三",
                 total_consumed=100.0,
                 total_paid=80.0,
+                total_abnormal_deducted=5.0,
                 current_balance=-20.0,
                 last_date=date(2026, 4, 7),
                 history_file=Path("/tmp/张三_客户快递费历史汇总.xlsx"),
@@ -104,6 +116,7 @@ class V83BalancePageTest(unittest.TestCase):
                 customer="李四",
                 total_consumed=50.0,
                 total_paid=60.0,
+                total_abnormal_deducted=0.0,
                 current_balance=10.0,
                 last_date=date(2026, 4, 8),
                 history_file=Path("/tmp/李四_客户快递费历史汇总.xlsx"),
@@ -115,8 +128,63 @@ class V83BalancePageTest(unittest.TestCase):
 
         self.assertEqual(list(app.balance_tree.items), ["balance-1", "balance-2"])
         self.assertEqual(app.balance_tree.items["balance-1"][0], "张三")
+        self.assertEqual(app.balance_tree.items["balance-1"][3], "¥5.00")
         self.assertEqual(app.balance_tree.items["balance-2"][0], "李四")
         self.assertEqual(app.balance_tree.selected, "balance-1")
+
+    def test_v8_9_3_balance_dashboard_populates_new_summary_metrics(self) -> None:
+        app = ExpressFeeApp.__new__(ExpressFeeApp)
+        app.balance_tree = FakeTree()
+        app.balance_history_paths = {}
+        app.balance_customer_dirs = {}
+        app.balance_total_consumed_var = FakeVar()
+        app.balance_total_paid_var = FakeVar()
+        app.balance_total_abnormal_deducted_var = FakeVar()
+        app.balance_available_balance_var = FakeVar()
+        app.balance_debt_total_var = FakeVar()
+        app.balance_debtor_count_var = FakeVar()
+        app.balance_status_var = FakeVar()
+
+        dashboard = gui_app.AccountBalanceDashboard(
+            records=[
+                CustomerBalanceRecord(
+                    customer="张三",
+                    total_consumed=100.0,
+                    total_paid=50.0,
+                    total_abnormal_deducted=10.0,
+                    current_balance=-60.0,
+                    last_date=date(2026, 4, 7),
+                    history_file=Path("/tmp/张三_客户快递费历史汇总.xlsx"),
+                    customer_dir=Path("/tmp/张三"),
+                ),
+                CustomerBalanceRecord(
+                    customer="李四",
+                    total_consumed=80.0,
+                    total_paid=120.0,
+                    total_abnormal_deducted=5.0,
+                    current_balance=35.0,
+                    last_date=date(2026, 4, 8),
+                    history_file=Path("/tmp/李四_客户快递费历史汇总.xlsx"),
+                    customer_dir=Path("/tmp/李四"),
+                ),
+            ]
+        )
+
+        app._apply_account_balance_dashboard(dashboard)
+
+        self.assertEqual(app.balance_total_consumed_var.get(), "¥180.00")
+        self.assertEqual(app.balance_total_paid_var.get(), "¥170.00")
+        self.assertEqual(app.balance_total_abnormal_deducted_var.get(), "¥15.00")
+        self.assertEqual(app.balance_available_balance_var.get(), "¥35.00")
+        self.assertEqual(app.balance_debt_total_var.get(), "¥60.00")
+        self.assertEqual(app.balance_debtor_count_var.get(), "1 位")
+
+    def test_v8_9_3_metric_cards_wrap_after_three_columns(self) -> None:
+        self.assertEqual(gui_app._metric_grid_position(0), (0, 0))
+        self.assertEqual(gui_app._metric_grid_position(2), (0, 2))
+        self.assertEqual(gui_app._metric_grid_position(3), (0, 3))
+        self.assertEqual(gui_app._metric_grid_position(3, columns_per_row=3), (1, 0))
+        self.assertEqual(gui_app._metric_grid_position(5, columns_per_row=3), (1, 2))
 
     def test_show_balance_page_updates_active_nav_title_and_raises_page(self) -> None:
         app = ExpressFeeApp.__new__(ExpressFeeApp)

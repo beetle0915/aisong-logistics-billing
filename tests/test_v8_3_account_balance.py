@@ -126,8 +126,71 @@ class AccountBalanceDashboardTest(unittest.TestCase):
             record = dashboard.records[0]
             self.assertAlmostEqual(record.total_consumed, 200.0)
             self.assertAlmostEqual(record.total_paid, 500.0)
+            self.assertAlmostEqual(record.total_abnormal_deducted, 80.0)
             self.assertAlmostEqual(record.current_balance, 220.0)
+            self.assertAlmostEqual(dashboard.total_abnormal_deducted, 80.0)
             self.assertAlmostEqual(dashboard.total_balance, 220.0)
+
+    def test_dashboard_splits_available_balance_and_debt_totals(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            split_dir = Path(temp_dir)
+            customer_a = split_dir / "客户A"
+            customer_b = split_dir / "客户B"
+            customer_a.mkdir()
+            customer_b.mkdir()
+            self._write_history_workbook(
+                customer_a,
+                "客户A",
+                [(date(2026, 4, 1), 100.0)],
+                [(date(2026, 4, 1), 180.0)],
+                [(date(2026, 4, 1), 30.0, "赔付扣款")],
+            )
+            self._write_history_workbook(
+                customer_b,
+                "客户B",
+                [(date(2026, 4, 2), 260.0)],
+                [(date(2026, 4, 2), 100.0)],
+            )
+
+            dashboard = collect_account_balance_dashboard(split_dir)
+
+            self.assertAlmostEqual(dashboard.total_consumed, 360.0)
+            self.assertAlmostEqual(dashboard.total_paid, 280.0)
+            self.assertAlmostEqual(dashboard.total_abnormal_deducted, 30.0)
+            self.assertAlmostEqual(dashboard.available_balance_total, 50.0)
+            self.assertAlmostEqual(dashboard.debt_total, 160.0)
+            self.assertAlmostEqual(dashboard.total_balance, -110.0)
+
+    def test_dashboard_sorts_debtors_first_by_largest_debt_then_recent_date(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            split_dir = Path(temp_dir)
+            for name in ("余额客户", "小欠款客户", "大欠款客户"):
+                (split_dir / name).mkdir()
+            self._write_history_workbook(
+                split_dir / "余额客户",
+                "余额客户",
+                [(date(2026, 4, 5), 100.0)],
+                [(date(2026, 4, 5), 300.0)],
+            )
+            self._write_history_workbook(
+                split_dir / "小欠款客户",
+                "小欠款客户",
+                [(date(2026, 4, 9), 120.0)],
+                [(date(2026, 4, 9), 100.0)],
+            )
+            self._write_history_workbook(
+                split_dir / "大欠款客户",
+                "大欠款客户",
+                [(date(2026, 4, 3), 400.0)],
+                [(date(2026, 4, 3), 50.0)],
+            )
+
+            dashboard = collect_account_balance_dashboard(split_dir)
+
+            self.assertEqual(
+                [record.customer for record in dashboard.records],
+                ["大欠款客户", "小欠款客户", "余额客户"],
+            )
 
     def test_missing_split_directory_returns_error_dashboard(self) -> None:
         missing_dir = Path("/tmp/aisong-missing-balance-dir")
