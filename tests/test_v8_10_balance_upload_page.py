@@ -41,7 +41,7 @@ class V810BalanceUploadPageTest(unittest.TestCase):
     def test_balance_upload_page_constants_match_simplified_handoff(self) -> None:
         self.assertEqual(
             list(gui_app.V8_10_BALANCE_UPLOAD_COLUMNS),
-            ["客户", "今日快递费消费", "今日余额", "状态"],
+            ["客户", "今日快递费消费", "今日余额", "余额日期", "状态"],
         )
         self.assertEqual(
             list(gui_app.V8_10_BALANCE_UPLOAD_ACTIONS),
@@ -100,21 +100,23 @@ class V810BalanceUploadPageTest(unittest.TestCase):
             upload_date=date(2026, 5, 9),
             source_dir=Path("/tmp/customers"),
             records=[
-                BalanceUploadRecord("客户A", 120.0, 300.0, "充足", Path("/tmp/a.xlsx")),
-                BalanceUploadRecord("客户B", 80.0, -50.0, "欠款", Path("/tmp/b.xlsx")),
+                BalanceUploadRecord("客户A", 120.0, 300.0, date(2026, 5, 9), "充足", Path("/tmp/a.xlsx")),
+                BalanceUploadRecord("客户B", 0.0, -50.0, date(2026, 5, 8), "欠款", Path("/tmp/b.xlsx")),
             ],
         )
 
         app._apply_balance_upload_preview(preview)
 
         self.assertEqual(app.balance_upload_customer_count_var.get(), "2 位")
-        self.assertEqual(app.balance_upload_today_fee_var.get(), "¥200.00")
+        self.assertEqual(app.balance_upload_today_fee_var.get(), "¥120.00")
         self.assertEqual(app.balance_upload_today_balance_var.get(), "¥250.00")
         self.assertEqual(app.balance_upload_debtor_count_var.get(), "1 位")
-        self.assertEqual(app.balance_upload_status_var.get(), "读取完成，共 2 位客户")
+        self.assertEqual(app.balance_upload_status_var.get(), "读取完成，共 2 位客户；其中 1 位沿用最近余额日期")
         self.assertEqual(app.balance_upload_tree.items["balance-upload-1"][0], "客户A")
         self.assertEqual(app.balance_upload_tree.items["balance-upload-1"][1], "¥120.00")
+        self.assertEqual(app.balance_upload_tree.items["balance-upload-2"][1], "¥0.00")
         self.assertEqual(app.balance_upload_tree.items["balance-upload-2"][2], "-¥50.00")
+        self.assertEqual(app.balance_upload_tree.items["balance-upload-2"][3], "2026-05-08")
         self.assertEqual(app.balance_upload_button.options["state"], "disabled")
 
         app.balance_upload_confirm_var.set(True)

@@ -144,8 +144,8 @@ V8_9_BILL_SPLIT_FILE_COLUMN_IDS = ("name", "sheet", "rows", "field_status", "pat
 V8_9_BILL_SPLIT_FILE_COLUMNS = ("文件名", "账单明细", "数据行", "字段状态", "路径")
 V8_9_BILL_SPLIT_RESULT_COLUMN_IDS = ("split_value", "name", "rows", "status", "path")
 V8_9_BILL_SPLIT_RESULT_COLUMNS = ("拆分值", "文件名", "行数", "状态", "路径")
-V8_10_BALANCE_UPLOAD_COLUMN_IDS = ("customer", "today_fee", "today_balance", "status")
-V8_10_BALANCE_UPLOAD_COLUMNS = ("客户", "今日快递费消费", "今日余额", "状态")
+V8_10_BALANCE_UPLOAD_COLUMN_IDS = ("customer", "today_fee", "today_balance", "balance_date", "status")
+V8_10_BALANCE_UPLOAD_COLUMNS = ("客户", "今日快递费消费", "今日余额", "余额日期", "状态")
 V8_10_BALANCE_UPLOAD_ACTIONS = ("读取数据", "确认并上传")
 SETTINGS_TOP_TAB_STYLE = "SettingsTop.TNotebook"
 PRICE_PREVIEW_COMBO_STYLE = "PricePreview.TCombobox"
@@ -1926,7 +1926,8 @@ class ExpressFeeApp(tk.Tk):
         self.balance_upload_tree.column("customer", width=150, minwidth=110, stretch=False)
         self.balance_upload_tree.column("today_fee", width=150, minwidth=120, stretch=False)
         self.balance_upload_tree.column("today_balance", width=150, minwidth=120, stretch=False)
-        self.balance_upload_tree.column("status", width=100, minwidth=80, stretch=True)
+        self.balance_upload_tree.column("balance_date", width=120, minwidth=100, stretch=False)
+        self.balance_upload_tree.column("status", width=90, minwidth=70, stretch=True)
         self.balance_upload_tree.grid(row=0, column=0, sticky="nsew")
 
         table_scroll = ttk.Scrollbar(
@@ -3666,6 +3667,10 @@ class ExpressFeeApp(tk.Tk):
         self.balance_upload_debtor_count_var.set(f"{preview.debtor_count} 位")
         if preview.errors:
             self.balance_upload_status_var.set(f"读取完成，{len(preview.errors)} 个客户存在问题")
+        elif preview.carried_forward_count:
+            self.balance_upload_status_var.set(
+                f"读取完成，共 {preview.customer_count} 位客户；其中 {preview.carried_forward_count} 位沿用最近余额日期"
+            )
         else:
             self.balance_upload_status_var.set(f"读取完成，共 {preview.customer_count} 位客户")
         self._refresh_balance_upload_table()
@@ -3689,6 +3694,7 @@ class ExpressFeeApp(tk.Tk):
                     record.customer,
                     self._format_currency(record.today_fee),
                     self._format_currency(record.today_balance),
+                    record.balance_date.isoformat(),
                     record.status,
                 ),
             )

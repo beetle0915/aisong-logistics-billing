@@ -26,6 +26,7 @@ class BalanceUploadRecord:
     customer: str
     today_fee: float
     today_balance: float
+    balance_date: date
     status: str
     history_file: Path
 
@@ -52,6 +53,10 @@ class BalanceUploadPreview:
     @property
     def debtor_count(self) -> int:
         return sum(1 for record in self.records if record.today_balance < 0)
+
+    @property
+    def carried_forward_count(self) -> int:
+        return sum(1 for record in self.records if record.balance_date != self.upload_date)
 
 
 @dataclass(frozen=True)
@@ -98,24 +103,34 @@ def read_balance_upload_record(customer: str, history_file: Path, upload_date: d
             raise ValueError(f"历史汇总缺少列：{'、'.join(missing_headers)}")
 
         target_row: tuple[Any, ...] | None = None
+        latest_row: tuple[Any, ...] | None = None
+        latest_date: date | None = None
         date_index = headers["日期"]
         for row in history_sheet.iter_rows(min_row=2, values_only=True):
-            if _parse_date(row[date_index]) == upload_date:
+            row_date = _parse_date(row[date_index])
+            if row_date is None:
+                continue
+            if row_date == upload_date:
                 target_row = row
-                break
+                latest_row = row
+                latest_date = row_date
+                continue
+            if row_date < upload_date and (latest_date is None or row_date > latest_date):
+                latest_row = row
+                latest_date = row_date
 
-        if target_row is None:
-            raise ValueError(f"历史汇总没有 {upload_date.isoformat()} 的记录")
+        if latest_row is None or latest_date is None:
+            raise ValueError(f"历史汇总没有 {upload_date.isoformat()} 之前的记录")
 
-        today_fee = _parse_number(target_row[headers["今日快递总消费"]])
-        cumulative_fee = _parse_number(target_row[headers["累计快递费用"]])
+        today_fee = _parse_number(target_row[headers["今日快递总消费"]]) if target_row else 0.0
+        cumulative_fee = _parse_number(latest_row[headers["累计快递费用"]])
         if today_fee is None:
             raise ValueError(f"{upload_date.isoformat()} 今日快递总消费为空")
         if cumulative_fee is None:
-            raise ValueError(f"{upload_date.isoformat()} 累计快递费用为空")
+            raise ValueError(f"{latest_date.isoformat()} 累计快递费用为空")
 
         current_balance = _parse_number(
-            target_row[headers["当前余额"]] if "当前余额" in headers else None
+            latest_row[headers["当前余额"]] if "当前余额" in headers else None
         )
         if current_balance is None:
             total_paid = _sum_records_until(workbook, CUSTOMER_PAYMENT_SHEET, date_column=0, amount_column=3, end_date=upload_date)
@@ -133,6 +148,7 @@ def read_balance_upload_record(customer: str, history_file: Path, upload_date: d
             customer=customer,
             today_fee=round(today_fee, 2),
             today_balance=current_balance,
+            balance_date=latest_date,
             status="欠款" if current_balance < 0 else "充足",
             history_file=history_file,
         )
@@ -164,6 +180,7 @@ def build_balance_upload_payload(
                 "customer": record.customer,
                 "todayFee": record.today_fee,
                 "todayBalance": record.today_balance,
+                "balanceDate": record.balance_date.isoformat(),
                 "status": record.status,
             }
             for record in preview.records

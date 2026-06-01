@@ -143,24 +143,31 @@ class BalanceUploadTest(unittest.TestCase):
             self.assertEqual([record.customer for record in preview.records], ["客户B", "客户A"])
             self.assertEqual(preview.records[0].today_fee, 260.5)
             self.assertEqual(preview.records[0].today_balance, -260.5)
+            self.assertEqual(preview.records[0].balance_date, date(2026, 5, 9))
             self.assertEqual(preview.records[0].status, "欠款")
             self.assertEqual(preview.records[1].today_balance, 270.0)
+            self.assertEqual(preview.records[1].balance_date, date(2026, 5, 9))
 
-    def test_skips_customers_without_the_selected_date_and_reports_error(self) -> None:
+    def test_uses_latest_history_before_upload_date_when_customer_has_no_today_shipments(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_text:
             split_dir = Path(temp_dir_text)
             self._write_customer_history(
                 split_dir,
                 "客户A",
                 [(date(2026, 5, 8), 80.0, 80.0)],
-                include_abnormal_sheet=False,
+                payments=[(date(2026, 5, 8), 200.0), (date(2026, 5, 9), 50.0)],
+                abnormal_deductions=[(date(2026, 5, 9), 20.0)],
             )
 
             preview = collect_balance_upload_preview(split_dir, date(2026, 5, 9))
 
-            self.assertEqual(preview.records, [])
-            self.assertEqual(preview.customer_count, 0)
-            self.assertIn("客户A：历史汇总没有 2026-05-09 的记录", preview.errors)
+            self.assertEqual(preview.errors, [])
+            self.assertEqual(preview.customer_count, 1)
+            self.assertEqual(preview.carried_forward_count, 1)
+            self.assertEqual(preview.records[0].customer, "客户A")
+            self.assertEqual(preview.records[0].today_fee, 0.0)
+            self.assertEqual(preview.records[0].today_balance, 150.0)
+            self.assertEqual(preview.records[0].balance_date, date(2026, 5, 8))
 
     def test_builds_minimal_payload_for_remote_upload(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_text:
@@ -190,6 +197,7 @@ class BalanceUploadTest(unittest.TestCase):
                         "customer": "客户A",
                         "todayFee": 120.0,
                         "todayBalance": 300.0,
+                        "balanceDate": "2026-05-09",
                         "status": "充足",
                     }
                 ],
