@@ -8,6 +8,7 @@ from pathlib import Path
 APP_DIR = Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP_DIR))
 
+from express_app.core.balance_upload import BalanceUploadResult  # noqa: E402
 from express_app.core.balance_upload import BalanceUploadPreview, BalanceUploadRecord  # noqa: E402
 from express_app.gui import app as gui_app  # noqa: E402
 from express_app.gui.app import ExpressFeeApp  # noqa: E402
@@ -20,6 +21,16 @@ class FakeButton:
 
     def configure(self, **kwargs: object) -> None:
         self.options.update(kwargs)
+
+
+class FakeQueue:
+    def __init__(self, items: list[tuple[str, object]]) -> None:
+        self.items = list(items)
+
+    def get_nowait(self) -> tuple[str, object]:
+        if not self.items:
+            raise gui_app.queue.Empty
+        return self.items.pop(0)
 
 
 class V810BalanceUploadPageTest(unittest.TestCase):
@@ -123,6 +134,52 @@ class V810BalanceUploadPageTest(unittest.TestCase):
         app._refresh_balance_upload_action_state()
 
         self.assertEqual(app.balance_upload_button.options["state"], "normal")
+
+    def test_failed_balance_upload_keeps_short_status_and_reenables_upload_button(self) -> None:
+        app = ExpressFeeApp.__new__(ExpressFeeApp)
+        app._queue = FakeQueue(
+            [
+                (
+                    "balance_upload_done",
+                    BalanceUploadResult(
+                        ok=False,
+                        status_code=401,
+                        message='服务器返回错误：401，{"timestamp":"2026-06-01T15:30:08.236+00:00","status":401,"error":"Unauthorized"}',
+                    ),
+                )
+            ]
+        )
+        app._worker = None
+        app.balance_upload_uploading = True
+        app.balance_upload_status_var = FakeVar()
+        app.status_var = FakeVar()
+        app.balance_upload_button = FakeButton()
+        app.balance_upload_read_button = FakeButton()
+        app.balance_upload_preview = BalanceUploadPreview(
+            upload_date=date(2026, 6, 1),
+            source_dir=Path("/tmp/customers"),
+            records=[
+                BalanceUploadRecord("客户A", 0.0, -200.0, date(2026, 5, 28), "欠款", Path("/tmp/a.xlsx")),
+            ],
+        )
+        app.balance_upload_confirm_var = FakeVar(True)
+        app.settings_balance_upload_url_var = FakeVar("https://api.example.test/balance")
+        app.settings_balance_upload_token_var = FakeVar("fixed-token")
+        app._append_balance_upload_log = lambda _text: None  # type: ignore[method-assign]
+        app.after = lambda *_args: None  # type: ignore[method-assign]
+
+        original_showerror = gui_app.messagebox.showerror
+        try:
+            gui_app.messagebox.showerror = lambda *_args, **_kwargs: None  # type: ignore[assignment]
+            app._poll_queue()
+        finally:
+            gui_app.messagebox.showerror = original_showerror  # type: ignore[assignment]
+
+        self.assertEqual(app.balance_upload_status_var.get(), "上传失败，请查看日志")
+        self.assertEqual(app.status_var.get(), "余额上传失败")
+        self.assertFalse(app.balance_upload_uploading)
+        self.assertEqual(app.balance_upload_button.options["state"], "normal")
+        self.assertEqual(app.balance_upload_read_button.options["state"], "normal")
 
 
 if __name__ == "__main__":

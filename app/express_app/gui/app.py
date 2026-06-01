@@ -3952,8 +3952,8 @@ class ExpressFeeApp(tk.Tk):
                 self.balance_upload_uploading = False
                 result = payload
                 self._append_balance_upload_log(result.message)
-                self.balance_upload_status_var.set(result.message)
                 self.status_var.set("余额上传完成" if result.ok else "余额上传失败")
+                self.balance_upload_status_var.set("上传成功" if result.ok else "上传失败，请查看日志")
                 self._refresh_balance_upload_action_state()
                 if result.ok:
                     messagebox.showinfo("上传完成", result.message)

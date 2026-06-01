@@ -18,11 +18,11 @@ from express_app.version import (  # noqa: E402
 
 
 class BrandingPackagingTest(unittest.TestCase):
-    def test_v8_10_1_branding_metadata(self) -> None:
+    def test_v8_10_2_branding_metadata(self) -> None:
         self.assertEqual(APP_DISPLAY_NAME, "艾松运费管家")
-        self.assertEqual(APP_VERSION, "8.10.1")
-        self.assertEqual(APP_VERSION_LABEL, "V8.10.1")
-        self.assertEqual(OUTPUT_VERSION_SUFFIX, "v8_10_1")
+        self.assertEqual(APP_VERSION, "8.10.2")
+        self.assertEqual(APP_VERSION_LABEL, "V8.10.2")
+        self.assertEqual(OUTPUT_VERSION_SUFFIX, "v8_10_2")
 
     def test_packaging_icon_assets_are_wired(self) -> None:
         self.assertEqual(build_macos_app.APP_ICON_FILE, "app_icon.icns")
@@ -31,7 +31,7 @@ class BrandingPackagingTest(unittest.TestCase):
 
         self.assertEqual(build_windows_exe.APP_ICON_PATH.name, "app_icon.ico")
         self.assertTrue(build_windows_exe.APP_ICON_PATH.exists())
-        self.assertEqual(build_windows_exe.PACKAGE_DIR.name, "艾松运费管家-V8.10.1")
+        self.assertEqual(build_windows_exe.PACKAGE_DIR.name, "艾松运费管家-V8.10.2")
 
 
 if __name__ == "__main__":
