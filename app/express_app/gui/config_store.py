@@ -58,6 +58,8 @@ class GuiConfig:
     split_customer_daily_files: bool = True
     generate_customer_history: bool = True
     refresh_all_customers: bool = False
+    balance_upload_url: str = ""
+    balance_upload_token: str = ""
     rule_config: ExpressFeeRuleConfig | None = None
 
 
@@ -82,6 +84,12 @@ def _path_from_value(value: Any, default: Path) -> Path:
 def _bool_from_value(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value
+    return default
+
+
+def _text_from_value(value: Any, default: str = "") -> str:
+    if isinstance(value, str):
+        return value.strip()
     return default
 
 
@@ -256,6 +264,8 @@ def load_gui_config(config_file: Path = DEFAULT_CONFIG_FILE) -> GuiConfig:
             raw_data.get("refresh_all_customers"),
             default.refresh_all_customers,
         ),
+        balance_upload_url=_text_from_value(raw_data.get("balance_upload_url")),
+        balance_upload_token=_text_from_value(raw_data.get("balance_upload_token")),
         rule_config=_rule_config_from_value(raw_data.get("rules")),
     )
 
@@ -276,6 +286,8 @@ def save_gui_config(
         "split_customer_daily_files": config.split_customer_daily_files,
         "generate_customer_history": config.generate_customer_history,
         "refresh_all_customers": config.refresh_all_customers,
+        "balance_upload_url": config.balance_upload_url,
+        "balance_upload_token": config.balance_upload_token,
         "rules": _rule_config_to_json(config.rule_config or build_default_rule_config()),
     }
     config_file.parent.mkdir(parents=True, exist_ok=True)

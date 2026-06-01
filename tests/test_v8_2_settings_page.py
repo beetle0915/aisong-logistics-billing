@@ -23,7 +23,7 @@ class V82SettingsPageTest(unittest.TestCase):
     def test_settings_sections_match_handoff_structure(self) -> None:
         self.assertEqual(
             list(V8_2_SETTINGS_SECTIONS),
-            ["目录配置", "精准映射", "关键词映射", "大件规则"],
+            ["目录配置", "精准映射", "关键词映射", "大件规则", "余额上传"],
         )
 
     def test_settings_sections_are_presented_as_top_tabs(self) -> None:

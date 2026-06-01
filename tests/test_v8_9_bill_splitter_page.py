@@ -107,11 +107,11 @@ class V89BillSplitterPageTest(unittest.TestCase):
     def test_bill_splitter_navigation_is_between_price_preview_and_settings(self) -> None:
         self.assertEqual(
             list(gui_app.V8_9_MAIN_NAV_ITEMS),
-            ["费用计算", "账户余额", "报价预览", "拆分账单", "系统设置"],
+            ["费用计算", "账户余额", "报价预览", "拆分账单", "余额上传", "系统设置"],
         )
         self.assertEqual(
             list(V8_9_ENABLED_NAV_ITEMS),
-            ["费用计算", "账户余额", "报价预览", "拆分账单", "系统设置"],
+            ["费用计算", "账户余额", "报价预览", "拆分账单", "余额上传", "系统设置"],
         )
         self.assertLess(
             gui_app.V8_9_MAIN_NAV_ITEMS.index("报价预览"),

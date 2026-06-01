@@ -27,6 +27,12 @@ from express_app.core.bill_splitter import (
     scan_bill_split_directory,
     split_bills_by_field,
 )
+from express_app.core.balance_upload import (
+    BalanceUploadPreview,
+    collect_balance_upload_preview,
+    build_balance_upload_payload,
+    upload_balance_payload,
+)
 from express_app.core.license_key import normalize_license_key, verify_license_key
 from express_app.core.calculator import (
     DEFAULT_OUTPUT_DIR,
@@ -47,7 +53,7 @@ from express_app.core.models import (
 from express_app.core import run_express_fee_batch_job
 from express_app.gui.config_store import GuiConfig, load_gui_config, save_gui_config
 from express_app.gui.design_tokens import GUI_COLORS, GUI_FONTS, GUI_LAYOUT
-from express_app.version import APP_DISPLAY_NAME, APP_VERSION_LABEL
+from express_app.version import APP_DISPLAY_NAME, APP_VERSION, APP_VERSION_LABEL
 
 
 APP_TITLE = f"{APP_DISPLAY_NAME} {APP_VERSION_LABEL}"
@@ -65,9 +71,12 @@ V8_1_WORKFLOW_STEPS = ("配置", "运行", "结果")
 V8_2_ENABLED_NAV_ITEMS = ("费用计算", "系统设置")
 V8_3_ENABLED_NAV_ITEMS = ("费用计算", "账户余额", "系统设置")
 V8_4_ENABLED_NAV_ITEMS = ("费用计算", "账户余额", "报价预览", "系统设置")
-V8_9_MAIN_NAV_ITEMS = ("费用计算", "账户余额", "报价预览", "拆分账单", "系统设置")
-V8_9_ENABLED_NAV_ITEMS = V8_9_MAIN_NAV_ITEMS
-V8_2_SETTINGS_SECTIONS = ("目录配置", "精准映射", "关键词映射", "大件规则")
+V8_10_MAIN_NAV_ITEMS = ("费用计算", "账户余额", "报价预览", "拆分账单", "余额上传", "系统设置")
+V8_10_ENABLED_NAV_ITEMS = V8_10_MAIN_NAV_ITEMS
+V8_9_MAIN_NAV_ITEMS = V8_10_MAIN_NAV_ITEMS
+V8_9_ENABLED_NAV_ITEMS = V8_10_ENABLED_NAV_ITEMS
+V8_10_SETTINGS_SECTIONS = ("目录配置", "精准映射", "关键词映射", "大件规则", "余额上传")
+V8_2_SETTINGS_SECTIONS = V8_10_SETTINGS_SECTIONS
 V8_2_1_WORKFLOW_STEPS = (
     ("config", "配置"),
     ("run", "运行"),
@@ -134,6 +143,9 @@ V8_9_BILL_SPLIT_FILE_COLUMN_IDS = ("name", "sheet", "rows", "field_status", "pat
 V8_9_BILL_SPLIT_FILE_COLUMNS = ("文件名", "账单明细", "数据行", "字段状态", "路径")
 V8_9_BILL_SPLIT_RESULT_COLUMN_IDS = ("split_value", "name", "rows", "status", "path")
 V8_9_BILL_SPLIT_RESULT_COLUMNS = ("拆分值", "文件名", "行数", "状态", "路径")
+V8_10_BALANCE_UPLOAD_COLUMN_IDS = ("customer", "today_fee", "today_balance", "status")
+V8_10_BALANCE_UPLOAD_COLUMNS = ("客户", "今日快递费消费", "今日余额", "状态")
+V8_10_BALANCE_UPLOAD_ACTIONS = ("读取数据", "确认并上传")
 SETTINGS_TOP_TAB_STYLE = "SettingsTop.TNotebook"
 PRICE_PREVIEW_COMBO_STYLE = "PricePreview.TCombobox"
 PRICE_PREVIEW_NOTEBOOK_STYLE = "PricePreview.TNotebook"
@@ -805,12 +817,28 @@ class ExpressFeeApp(tk.Tk):
         self.settings_section_pages: dict[str, ttk.Frame] = {}
         self.settings_exact_text: tk.Text | None = None
         self.settings_keyword_text: tk.Text | None = None
+        self.balance_upload_page: ttk.Frame | None = None
+        self.balance_upload_tree: ttk.Treeview | None = None
+        self.balance_upload_log_text: scrolledtext.ScrolledText | None = None
+        self.balance_upload_preview: BalanceUploadPreview | None = None
+        self.balance_upload_uploading = False
+        self.balance_upload_date_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
+        self.balance_upload_confirm_var = tk.BooleanVar(value=False)
+        self.balance_upload_status_var = tk.StringVar(value="等待读取数据")
+        self.balance_upload_customer_count_var = tk.StringVar(value="0 位")
+        self.balance_upload_today_fee_var = tk.StringVar(value="¥0.00")
+        self.balance_upload_today_balance_var = tk.StringVar(value="¥0.00")
+        self.balance_upload_debtor_count_var = tk.StringVar(value="0 位")
+        self.balance_upload_button: ttk.Button | None = None
+        self.balance_upload_read_button: ttk.Button | None = None
         self.settings_large_companies_var = tk.StringVar()
         self.settings_threshold_var = tk.StringVar()
         self.settings_suffix_var = tk.StringVar()
         self.settings_super_large_companies_var = tk.StringVar()
         self.settings_super_large_threshold_var = tk.StringVar()
         self.settings_super_large_suffix_var = tk.StringVar()
+        self.settings_balance_upload_url_var = tk.StringVar(value=gui_config.balance_upload_url)
+        self.settings_balance_upload_token_var = tk.StringVar(value=gui_config.balance_upload_token)
 
         self._configure_styles()
         self._refresh_option_labels()
@@ -1232,6 +1260,12 @@ class ExpressFeeApp(tk.Tk):
         self.bill_splitter_page.columnconfigure(0, weight=1)
         self.bill_splitter_page.rowconfigure(3, weight=1)
         self._build_bill_splitter_page(self.bill_splitter_page)
+
+        self.balance_upload_page = ttk.Frame(self.content_container, style="Content.TFrame")
+        self.balance_upload_page.grid(row=0, column=0, sticky="nsew")
+        self.balance_upload_page.columnconfigure(0, weight=1)
+        self.balance_upload_page.rowconfigure(2, weight=1)
+        self._build_balance_upload_page(self.balance_upload_page)
 
         self.settings_page = ttk.Frame(self.content_container, style="Content.TFrame")
         self.settings_page.grid(row=0, column=0, sticky="nsew")
@@ -1659,6 +1693,39 @@ class ExpressFeeApp(tk.Tk):
             pady=5,
         )
 
+        upload_frame = ttk.LabelFrame(
+            self.settings_section_pages["余额上传"],
+            text="余额上传接口",
+            padding=14,
+            style="Panel.TLabelframe",
+        )
+        upload_frame.grid(row=0, column=0, sticky="ew")
+        upload_frame.columnconfigure(1, weight=1)
+        ttk.Label(upload_frame, text="上传接口地址", style="Field.TLabel").grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=5,
+        )
+        ttk.Entry(upload_frame, textvariable=self.settings_balance_upload_url_var).grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(10, 8),
+            pady=5,
+        )
+        ttk.Label(upload_frame, text="上传密钥", style="Field.TLabel").grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=5,
+        )
+        ttk.Entry(
+            upload_frame,
+            textvariable=self.settings_balance_upload_token_var,
+            show="*",
+        ).grid(row=1, column=1, sticky="ew", padx=(10, 8), pady=5)
+
         actions = ttk.Frame(content, style="Content.TFrame")
         actions.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         ttk.Button(
@@ -1794,6 +1861,110 @@ class ExpressFeeApp(tk.Tk):
             command=self._open_selected_balance_history,
             style="Secondary.TButton",
         ).pack(side=tk.LEFT, padx=(8, 0))
+
+    def _build_balance_upload_page(self, content: ttk.Frame) -> None:
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(2, weight=1)
+
+        config_frame = ttk.LabelFrame(
+            content,
+            text="上传确认",
+            padding=12,
+            style="Panel.TLabelframe",
+        )
+        config_frame.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        config_frame.columnconfigure(1, weight=1)
+        ttk.Label(config_frame, text="上传日期", style="Field.TLabel").grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=5,
+        )
+        ttk.Entry(config_frame, textvariable=self.balance_upload_date_var, width=16).grid(
+            row=0,
+            column=1,
+            sticky="w",
+            padx=(10, 8),
+            pady=5,
+        )
+        ttk.Checkbutton(
+            config_frame,
+            text="已确认以上日期为本次要上传的数据日期",
+            variable=self.balance_upload_confirm_var,
+            command=self._refresh_balance_upload_action_state,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        summary_frame = ttk.Frame(content, style="Content.TFrame")
+        summary_frame.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        for column in range(4):
+            summary_frame.columnconfigure(column, weight=1)
+        self._metric(summary_frame, 0, "待上传客户", self.balance_upload_customer_count_var, columns_per_row=4)
+        self._metric(summary_frame, 1, "今日快递费消费", self.balance_upload_today_fee_var, columns_per_row=4)
+        self._metric(summary_frame, 2, "今日余额合计", self.balance_upload_today_balance_var, columns_per_row=4)
+        self._metric(summary_frame, 3, "欠款客户", self.balance_upload_debtor_count_var, columns_per_row=4)
+
+        table_frame = ttk.LabelFrame(
+            content,
+            text="上传预览",
+            padding=8,
+            style="Panel.TLabelframe",
+        )
+        table_frame.grid(row=2, column=0, sticky="nsew")
+        table_frame.rowconfigure(0, weight=1)
+        table_frame.columnconfigure(0, weight=1)
+
+        self.balance_upload_tree = ttk.Treeview(
+            table_frame,
+            columns=V8_10_BALANCE_UPLOAD_COLUMN_IDS,
+            show="headings",
+            height=12,
+            selectmode="browse",
+        )
+        for column_id, label in zip(V8_10_BALANCE_UPLOAD_COLUMN_IDS, V8_10_BALANCE_UPLOAD_COLUMNS):
+            self.balance_upload_tree.heading(column_id, text=label)
+        self.balance_upload_tree.column("customer", width=150, minwidth=110, stretch=False)
+        self.balance_upload_tree.column("today_fee", width=150, minwidth=120, stretch=False)
+        self.balance_upload_tree.column("today_balance", width=150, minwidth=120, stretch=False)
+        self.balance_upload_tree.column("status", width=100, minwidth=80, stretch=True)
+        self.balance_upload_tree.grid(row=0, column=0, sticky="nsew")
+
+        table_scroll = ttk.Scrollbar(
+            table_frame,
+            orient=tk.VERTICAL,
+            command=self.balance_upload_tree.yview,
+        )
+        table_scroll.grid(row=0, column=1, sticky="ns")
+        self.balance_upload_tree.configure(yscrollcommand=table_scroll.set)
+
+        self.balance_upload_log_text = scrolledtext.ScrolledText(table_frame, height=4, wrap=tk.WORD)
+        self.balance_upload_log_text.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.balance_upload_log_text.configure(state=tk.DISABLED)
+
+        actions = ttk.Frame(table_frame, style="Surface.TFrame")
+        actions.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Label(
+            actions,
+            textvariable=self.balance_upload_status_var,
+            background=COLORS["surface"],
+            foreground=COLORS["muted"],
+        ).pack(side=tk.LEFT)
+        action_buttons = ttk.Frame(actions, style="Surface.TFrame")
+        action_buttons.pack(side=tk.RIGHT)
+        self.balance_upload_read_button = ttk.Button(
+            action_buttons,
+            text="读取数据",
+            command=self._load_balance_upload_preview,
+            style="Secondary.TButton",
+        )
+        self.balance_upload_read_button.pack(side=tk.LEFT)
+        self.balance_upload_button = ttk.Button(
+            action_buttons,
+            text="确认并上传",
+            command=self._start_balance_upload,
+            style="Primary.TButton",
+        )
+        self.balance_upload_button.pack(side=tk.LEFT, padx=(8, 0))
+        self._refresh_balance_upload_action_state()
 
     def _build_price_preview_page(self, content: ttk.Frame) -> None:
         content.columnconfigure(0, weight=1)
@@ -2180,6 +2351,11 @@ class ExpressFeeApp(tk.Tk):
             if self.bill_splitter_page is not None:
                 self.bill_splitter_page.tkraise()
             self._show_bill_split_workflow_step("config")
+        elif nav_item == "余额上传":
+            self.module_title_var.set("余额上传")
+            self.module_subtitle_var.set("确认上传日期后，读取客户今日快递费消费和今日余额并上传。")
+            if self.balance_upload_page is not None:
+                self.balance_upload_page.tkraise()
         else:
             self.module_title_var.set("费用计算")
             self.module_subtitle_var.set("按配置、运行、结果三个步骤完成快递费用计算和客户明细生成。")
@@ -3459,6 +3635,144 @@ class ExpressFeeApp(tk.Tk):
             return
         self._open_existing_path(path)
 
+    def _load_balance_upload_preview(self) -> None:
+        upload_date = self._parse_balance_upload_date()
+        if upload_date is None:
+            return
+        self.balance_upload_confirm_var.set(False)
+        self._clear_balance_upload_log()
+        self._append_balance_upload_log(f"读取上传日期：{upload_date.isoformat()}")
+        preview = collect_balance_upload_preview(Path(self.split_dir_var.get()).expanduser(), upload_date)
+        self._apply_balance_upload_preview(preview)
+        for error in preview.errors:
+            self._append_balance_upload_log(error)
+
+    def _parse_balance_upload_date(self) -> date | None:
+        text = self.balance_upload_date_var.get().strip()
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+            try:
+                return datetime.strptime(text, fmt).date()
+            except ValueError:
+                pass
+        messagebox.showwarning("日期格式错误", "上传日期请填写为 YYYY-MM-DD，例如 2026-05-09。")
+        return None
+
+    def _apply_balance_upload_preview(self, preview: BalanceUploadPreview) -> None:
+        self.balance_upload_preview = preview
+        self.balance_upload_customer_count_var.set(f"{preview.customer_count} 位")
+        self.balance_upload_today_fee_var.set(self._format_currency(preview.total_today_fee))
+        self.balance_upload_today_balance_var.set(self._format_currency(preview.total_today_balance))
+        self.balance_upload_debtor_count_var.set(f"{preview.debtor_count} 位")
+        if preview.errors:
+            self.balance_upload_status_var.set(f"读取完成，{len(preview.errors)} 个客户存在问题")
+        else:
+            self.balance_upload_status_var.set(f"读取完成，共 {preview.customer_count} 位客户")
+        self._refresh_balance_upload_table()
+        self._refresh_balance_upload_action_state()
+
+    def _refresh_balance_upload_table(self) -> None:
+        tree = self.balance_upload_tree
+        if tree is None:
+            return
+        for item_id in tree.get_children():
+            tree.delete(item_id)
+        preview = self.balance_upload_preview
+        if preview is None:
+            return
+        for index, record in enumerate(preview.records, start=1):
+            tree.insert(
+                "",
+                tk.END,
+                iid=f"balance-upload-{index}",
+                values=(
+                    record.customer,
+                    self._format_currency(record.today_fee),
+                    self._format_currency(record.today_balance),
+                    record.status,
+                ),
+            )
+        first_item = tree.get_children()
+        if first_item:
+            tree.selection_set(first_item[0])
+
+    def _refresh_balance_upload_action_state(self) -> None:
+        preview = self.__dict__.get("balance_upload_preview")
+        has_records = bool(preview and preview.records)
+        has_confirmed_date = bool(self.balance_upload_confirm_var.get())
+        has_endpoint = bool(self.settings_balance_upload_url_var.get().strip())
+        has_token = bool(self.settings_balance_upload_token_var.get().strip())
+        is_uploading = bool(self.__dict__.get("balance_upload_uploading", False))
+        state = tk.NORMAL if has_records and has_confirmed_date and has_endpoint and has_token and not is_uploading else tk.DISABLED
+        if self.balance_upload_button is not None:
+            self.balance_upload_button.configure(state=state)
+        if self.__dict__.get("balance_upload_read_button") is not None:
+            self.balance_upload_read_button.configure(state=tk.DISABLED if is_uploading else tk.NORMAL)
+
+    def _start_balance_upload(self) -> None:
+        if self._worker and self._worker.is_alive():
+            messagebox.showinfo("正在运行", "当前任务还在运行，请稍等。")
+            return
+        preview = self.balance_upload_preview
+        if preview is None or not preview.records:
+            messagebox.showwarning("没有可上传数据", "请先读取要上传的数据。")
+            return
+        upload_date = self._parse_balance_upload_date()
+        if upload_date is None:
+            return
+        if upload_date != preview.upload_date:
+            messagebox.showwarning("日期不一致", "当前填写的上传日期与预览日期不一致，请重新读取数据。")
+            return
+        if not self.balance_upload_confirm_var.get():
+            messagebox.showwarning("请确认日期", "请先确认本次上传的数据日期。")
+            return
+
+        url = self.settings_balance_upload_url_var.get().strip()
+        token = self.settings_balance_upload_token_var.get().strip()
+        if not url or not token:
+            messagebox.showwarning("上传配置缺失", "请先在系统设置的余额上传中配置接口地址和上传密钥。")
+            return
+
+        self._save_current_config()
+        self.balance_upload_uploading = True
+        self.balance_upload_status_var.set("上传中")
+        self._append_balance_upload_log(f"开始上传：{preview.upload_date.isoformat()}，{preview.customer_count} 位客户")
+        self._refresh_balance_upload_action_state()
+        self._worker = threading.Thread(
+            target=self._run_balance_upload_worker,
+            args=(preview, url, token),
+            daemon=True,
+        )
+        self._worker.start()
+        self.after(100, self._poll_queue)
+
+    def _run_balance_upload_worker(self, preview: BalanceUploadPreview, url: str, token: str) -> None:
+        try:
+            payload = build_balance_upload_payload(preview, app_version=APP_VERSION)
+            result = upload_balance_payload(url, token, payload)
+        except Exception as exc:  # GUI boundary: show unexpected errors to user.
+            self._queue.put(("balance_upload_error", exc))
+        else:
+            self._queue.put(("balance_upload_done", result))
+
+    def _append_balance_upload_log(self, text: str) -> None:
+        log_text = self.balance_upload_log_text
+        if log_text is None:
+            return
+        log_text.configure(state=tk.NORMAL)
+        if log_text.index("end-1c") != "1.0":
+            log_text.insert(tk.END, "\n")
+        log_text.insert(tk.END, text)
+        log_text.see(tk.END)
+        log_text.configure(state=tk.DISABLED)
+
+    def _clear_balance_upload_log(self) -> None:
+        log_text = self.balance_upload_log_text
+        if log_text is None:
+            return
+        log_text.configure(state=tk.NORMAL)
+        log_text.delete("1.0", tk.END)
+        log_text.configure(state=tk.DISABLED)
+
     def _format_currency(self, value: float) -> str:
         sign = "-" if value < 0 else ""
         return f"{sign}¥{abs(value):,.2f}"
@@ -3626,6 +3940,26 @@ class ExpressFeeApp(tk.Tk):
                 self._set_bill_split_controls_state(tk.NORMAL)
                 self._update_bill_split_action_state()
                 messagebox.showerror("拆分失败", str(payload))
+            elif kind == "balance_upload_done":
+                handled_terminal_event = True
+                self.balance_upload_uploading = False
+                result = payload
+                self._append_balance_upload_log(result.message)
+                self.balance_upload_status_var.set(result.message)
+                self.status_var.set("余额上传完成" if result.ok else "余额上传失败")
+                self._refresh_balance_upload_action_state()
+                if result.ok:
+                    messagebox.showinfo("上传完成", result.message)
+                else:
+                    messagebox.showerror("上传失败", result.message)
+            elif kind == "balance_upload_error":
+                handled_terminal_event = True
+                self.balance_upload_uploading = False
+                self._append_balance_upload_log(f"上传失败：{payload}")
+                self.balance_upload_status_var.set("上传失败，请查看日志")
+                self.status_var.set("余额上传失败")
+                self._refresh_balance_upload_action_state()
+                messagebox.showerror("上传失败", str(payload))
 
         if not handled_terminal_event and self._worker and self._worker.is_alive():
             self.after(100, self._poll_queue)
