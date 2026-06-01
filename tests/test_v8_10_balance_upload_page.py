@@ -49,6 +49,9 @@ class V810BalanceUploadPageTest(unittest.TestCase):
         )
         self.assertIn("余额上传", gui_app.V8_10_SETTINGS_SECTIONS)
 
+    def test_gui_module_exposes_datetime_for_balance_upload_startup_defaults(self) -> None:
+        self.assertTrue(hasattr(gui_app, "datetime"))
+
     def test_show_balance_upload_page_updates_title_and_raises_page(self) -> None:
         app = ExpressFeeApp.__new__(ExpressFeeApp)
         app.active_nav_var = FakeVar("费用计算")

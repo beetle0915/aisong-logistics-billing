@@ -10,6 +10,7 @@ import sys
 import threading
 import tkinter as tk
 import uuid
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
