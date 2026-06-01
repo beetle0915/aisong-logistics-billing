@@ -169,6 +169,25 @@ class BalanceUploadTest(unittest.TestCase):
             self.assertEqual(preview.records[0].today_balance, 150.0)
             self.assertEqual(preview.records[0].balance_date, date(2026, 5, 8))
 
+    def test_upload_date_snapshot_includes_customers_with_only_earlier_balance_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_text:
+            split_dir = Path(temp_dir_text)
+            self._write_customer_history(
+                split_dir,
+                "客户A",
+                [(date(2026, 5, 28), 300.0, 300.0)],
+                payments=[(date(2026, 5, 29), 100.0)],
+                abnormal_deductions=[],
+            )
+
+            preview = collect_balance_upload_preview(split_dir, date(2026, 6, 1))
+
+            self.assertEqual(preview.errors, [])
+            self.assertEqual(preview.customer_count, 1)
+            self.assertEqual(preview.records[0].today_fee, 0.0)
+            self.assertEqual(preview.records[0].today_balance, -200.0)
+            self.assertEqual(preview.records[0].balance_date, date(2026, 5, 28))
+
     def test_builds_minimal_payload_for_remote_upload(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_text:
             split_dir = Path(temp_dir_text)
