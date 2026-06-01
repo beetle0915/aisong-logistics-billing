@@ -3706,10 +3706,8 @@ class ExpressFeeApp(tk.Tk):
         preview = self.__dict__.get("balance_upload_preview")
         has_records = bool(preview and preview.records)
         has_confirmed_date = bool(self.balance_upload_confirm_var.get())
-        has_endpoint = bool(self.settings_balance_upload_url_var.get().strip())
-        has_token = bool(self.settings_balance_upload_token_var.get().strip())
         is_uploading = bool(self.__dict__.get("balance_upload_uploading", False))
-        state = tk.NORMAL if has_records and has_confirmed_date and has_endpoint and has_token and not is_uploading else tk.DISABLED
+        state = tk.NORMAL if has_records and has_confirmed_date and not is_uploading else tk.DISABLED
         if self.balance_upload_button is not None:
             self.balance_upload_button.configure(state=state)
         if self.__dict__.get("balance_upload_read_button") is not None:

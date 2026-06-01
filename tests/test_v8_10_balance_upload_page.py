@@ -181,6 +181,27 @@ class V810BalanceUploadPageTest(unittest.TestCase):
         self.assertEqual(app.balance_upload_button.options["state"], "normal")
         self.assertEqual(app.balance_upload_read_button.options["state"], "normal")
 
+    def test_balance_upload_button_does_not_stay_disabled_while_endpoint_settings_are_being_fixed(self) -> None:
+        app = ExpressFeeApp.__new__(ExpressFeeApp)
+        app.balance_upload_button = FakeButton()
+        app.balance_upload_read_button = FakeButton()
+        app.balance_upload_uploading = False
+        app.balance_upload_preview = BalanceUploadPreview(
+            upload_date=date(2026, 6, 1),
+            source_dir=Path("/tmp/customers"),
+            records=[
+                BalanceUploadRecord("客户A", 0.0, -200.0, date(2026, 5, 28), "欠款", Path("/tmp/a.xlsx")),
+            ],
+        )
+        app.balance_upload_confirm_var = FakeVar(True)
+        app.settings_balance_upload_url_var = FakeVar("")
+        app.settings_balance_upload_token_var = FakeVar("")
+
+        app._refresh_balance_upload_action_state()
+
+        self.assertEqual(app.balance_upload_button.options["state"], "normal")
+        self.assertEqual(app.balance_upload_read_button.options["state"], "normal")
+
 
 if __name__ == "__main__":
     unittest.main()
